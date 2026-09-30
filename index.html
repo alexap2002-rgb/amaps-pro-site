@@ -297,7 +297,7 @@ tbody tr:last-child td{border-bottom:0}
 <button aria-controls="main-menu" aria-expanded="false" class="menu-toggle" data-menu-toggle="" type="button">
 <span></span><span></span><span></span><span class="sr-only">Открыть меню</span>
 </button>
-<nav aria-label="Основная навигация" class="main-nav" data-menu="" id="main-menu"><a href="#customer">Заказчику</a><a href="#executor">Исполнителю</a><a href="#process">Как работаем</a><a class="nav-cta" href="mailto:info@amaps-pro.ru">Связаться</a></nav>
+<nav aria-label="Основная навигация" class="main-nav" data-menu="" id="main-menu"><a data-attr="amaps-nav-customer" data-amaps-event="customer_interest" data-amaps-placement="nav" href="#customer">Заказчику</a><a data-attr="amaps-nav-executor" data-amaps-event="executor_interest" data-amaps-placement="nav" href="#executor">Исполнителю</a><a data-attr="amaps-nav-process" data-amaps-event="process_interest" data-amaps-placement="nav" href="#process">Как работаем</a><a class="nav-cta" data-attr="amaps-nav-contact" data-amaps-event="contact_email" data-amaps-placement="nav" href="mailto:info@amaps-pro.ru">Связаться</a></nav>
 </div>
 </header>
 <main id="main">
@@ -308,8 +308,8 @@ tbody tr:last-child td{border-bottom:0}
 <h1 class="hero-title"><span>Промышленный спрос.</span><span>Проверенный рынок.</span><span>Предметный контакт.</span></h1>
 <p class="hero-lead">АМАПС помогает заказчикам находить подходящих производителей, поставщиков и подрядчиков, а исполнителям — подключаться к задачам, где их опыт и возможности действительно подходят.</p>
 <div class="hero-actions">
-<a class="btn btn-primary" href="#customer">Описать задачу</a>
-<a class="btn btn-ghost" href="#executor">Стать исполнителем</a>
+<a class="btn btn-primary" data-attr="amaps-hero-customer" data-amaps-event="customer_interest" data-amaps-placement="hero" href="#customer">Описать задачу</a>
+<a class="btn btn-ghost" data-attr="amaps-hero-executor" data-amaps-event="executor_interest" data-amaps-placement="hero" href="#executor">Стать исполнителем</a>
 </div>
 <p class="hero-note">Заказчик самостоятельно выбирает контрагента. Исполнитель самостоятельно оценивает задачу и коммерческие условия.</p>
 </div>
@@ -361,7 +361,7 @@ tbody tr:last-child td{border-bottom:0}
 <article class="card"><span class="card-no">03</span><h3>Передаём варианты</h3><p>Передаём заказчику подходящие варианты для дальнейших переговоров и самостоятельного выбора.</p></article>
 </div>
 <div class="hero-actions">
-<a class="btn btn-primary" href="mailto:info@amaps-pro.ru?subject=%D0%97%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%20%D0%B4%D0%BB%D1%8F%20%D0%90%D0%9C%D0%90%D0%9F%D0%A1">Описать задачу</a>
+<a class="btn btn-primary" data-attr="amaps-customer-email" data-amaps-event="customer_email" data-amaps-placement="customer_section" href="mailto:info@amaps-pro.ru?subject=%D0%97%D0%B0%D0%B4%D0%B0%D1%87%D0%B0%20%D0%B4%D0%BB%D1%8F%20%D0%90%D0%9C%D0%90%D0%9F%D0%A1">Описать задачу</a>
 </div>
 <p class="fineprint">Заказчик самостоятельно определяет условия закупки и выбирает контрагента. Количество найденных исполнителей и коммерческий результат не гарантируются.</p>
 </div>
@@ -379,7 +379,7 @@ tbody tr:last-child td{border-bottom:0}
 <article class="card"><span class="card-no">03</span><h3>География и контакты</h3><p>Определяем регионы работы и контакты для быстрого выхода на предметное обсуждение.</p></article>
 </div>
 <div class="hero-actions">
-<a class="btn btn-primary" href="mailto:info@amaps-pro.ru?subject=%D0%98%D1%81%D0%BF%D0%BE%D0%BB%D0%BD%D0%B8%D1%82%D0%B5%D0%BB%D1%8C%20%D0%B4%D0%BB%D1%8F%20%D0%90%D0%9C%D0%90%D0%9F%D0%A1">Стать исполнителем</a>
+<a class="btn btn-primary" data-attr="amaps-executor-email" data-amaps-event="executor_email" data-amaps-placement="executor_section" href="mailto:info@amaps-pro.ru?subject=%D0%98%D1%81%D0%BF%D0%BE%D0%BB%D0%BD%D0%B8%D1%82%D0%B5%D0%BB%D1%8C%20%D0%B4%D0%BB%D1%8F%20%D0%90%D0%9C%D0%90%D0%9F%D0%A1">Стать исполнителем</a>
 </div>
 </div>
 </section>
@@ -418,7 +418,7 @@ tbody tr:last-child td{border-bottom:0}
 <footer class="site-footer">
 <div class="shell footer-grid">
 <div class="brand footer-brand"><img alt="Логотип АМАПС" class="brand-logo" src="amaps-logo-20260920-final.png"/><span class="brand-copy"><strong>АМАПС</strong><small>Аналитико-Мониторинговое Агентство<br/>Промышленного Спроса</small></span></div>
-<p>Аналитико-мониторинговое агентство промышленного спроса.<br/><a class="footer-email" href="mailto:info@amaps-pro.ru">info@amaps-pro.ru</a></p>
+<p>Аналитико-мониторинговое агентство промышленного спроса.<br/><a class="footer-email" data-attr="amaps-footer-email" data-amaps-event="contact_email" data-amaps-placement="footer" href="mailto:info@amaps-pro.ru">info@amaps-pro.ru</a></p>
 <p class="footer-legal">Материалы сайта носят информационный характер. Решения о выборе контрагента и коммерческих условиях принимаются сторонами самостоятельно.</p>
 </div>
 </footer>
@@ -465,6 +465,17 @@ tbody tr:last-child td{border-bottom:0}
     if (window.innerWidth > 760) closeMenu();
   });
 })();
+
+document.addEventListener('click', (event) => {
+  const link = event.target.closest('[data-amaps-event]');
+  if (!link || !window.posthog || typeof window.posthog.capture !== 'function') return;
+
+  window.posthog.capture('amaps_cta_click', {
+    action: link.dataset.amapsEvent,
+    placement: link.dataset.amapsPlacement || 'unknown',
+    destination_type: link.getAttribute('href')?.startsWith('mailto:') ? 'email' : 'section'
+  });
+});
 
 
 
