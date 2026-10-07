@@ -84,6 +84,10 @@ export default {
       });
     }
 
+    if (request.method === "GET") {
+      return json({ ok: true, service: "amaps-form", status: "ready" }, 200, origin);
+    }
+
     if (request.method !== "POST") {
       return json({ ok: false, error: "Метод не поддерживается." }, 405, origin);
     }
