@@ -4,6 +4,8 @@ on:
     paths:
       - 'cloudflare-worker-v2.js'
       - 'tests/site-form.test.mjs'
+      - 'cloudflare-outbound-guard.js'
+      - 'tests/outbound-guard.test.mjs'
       - '.github/workflows/site-form-tests.yml'
   workflow_dispatch:
 jobs:
@@ -16,3 +18,5 @@ jobs:
           node-version: '22'
       - run: node --check cloudflare-worker-v2.js
       - run: node --test tests/site-form.test.mjs
+      - run: node --check cloudflare-outbound-guard.js
+      - run: node --test tests/outbound-guard.test.mjs
