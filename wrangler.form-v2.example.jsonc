@@ -1,0 +1,9 @@
+{
+  // Пример: значения не являются действующими ресурсами.
+  "name": "amaps-form-v2",
+  "main": "./cloudflare-worker-v2.js",
+  "compatibility_date": "2026-10-16",
+  "triggers": {"crons": ["*/15 * * * *"]},
+  "d1_databases": [{"binding":"LEADS_DB","database_name":"amaps-site-leads","database_id":"УКАЖИТЕ_ID_БАЗЫ"}],
+  "r2_buckets": [{"binding":"LEADS_FILES","bucket_name":"amaps-private-leads"}]
+}
