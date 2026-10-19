@@ -107,11 +107,15 @@
       submitButton.textContent='Отправляем…';
       showStatus('Отправляем обращение…','wait');
       try{
-        const response=await fetch(endpoint,{method:'POST',body:new FormData(form)});
+        const submissionId=form.dataset.amapsSubmissionId||(form.dataset.amapsSubmissionId=crypto.randomUUID());
+        const requestData=new FormData(form);
+        requestData.set('submission_id',submissionId);
+        const response=await fetch(endpoint,{method:'POST',body:requestData});
         const data=await response.json().catch(()=>({}));
         if(!response.ok||!data.ok)throw new Error(data.error||'Не удалось отправить обращение.');
-        showStatus('Обращение отправлено. Мы получили ваши данные.','ok');
+        showStatus((data.message||'Обращение принято почтовым сервисом; регистрация в СРМ ещё не подтверждена.')+' Номер обращения: '+(data.submission_id||submissionId)+'.','ok');
         form.reset();
+        delete form.dataset.amapsSubmissionId;
         capture('amaps_request_sent',{placement:'request_form'});
       }catch(error){
         showStatus((error&&error.message?error.message:'Не удалось отправить обращение.')+' Можно написать на info@amaps-pro.ru.','error');
