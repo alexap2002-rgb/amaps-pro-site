@@ -94,6 +94,12 @@
     statusBox.className='form-status show '+type;
   };
 
+  if(form){
+    const clearSubmissionId=()=>{delete form.dataset.amapsSubmissionId};
+    form.addEventListener('input',clearSubmissionId);
+    form.addEventListener('change',clearSubmissionId);
+  }
+
   if(form)form.addEventListener('submit',async event=>{
     event.preventDefault();
     const file=form.querySelector('#attachment')?.files?.[0];
