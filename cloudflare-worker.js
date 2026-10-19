@@ -85,6 +85,32 @@ async function syncAttio(env,row) {
     .bind(row.id).run();
   return true;
 }
+async function ensureQualificationTask(env,row) {
+  if(row.task_status==="confirmed"&&row.task_id)return true;
+  if(!row.attio_record_id)return false;
+  const marker="Заявка сайта № "+row.id;
+  const url="/tasks?linked_object=companies&linked_record_id="+encodeURIComponent(row.attio_record_id)+"&limit=100";
+  const existing=await attioRequest(env,url);
+  const old=(existing.data||[]).find(x=>String(x.content||"").includes(marker));
+  let taskId=old?.id?.task_id||null;
+  if(!taskId) {
+    const date=new Date((Date.parse(row.created_at)||Date.now())+4*60*60*1000).toISOString();
+    const made=await attioRequest(env,"/tasks","POST",{data:{
+      content:marker+" — "+row.role+". Проверить обращение, уточнить актуальность и следующий шаг. Данные исполнителям не передавать без двух подписанных документов.",
+      format:"plaintext",deadline_at:date,is_completed:false,
+      assignees:[{referenced_actor_type:"workspace-member",referenced_actor_id:env.AMAPS_ASSIGNEE_MEMBER_ID}],
+      linked_records:[{target_object:"companies",target_record_id:row.attio_record_id}]
+    }});
+    taskId=made.data?.id?.task_id;
+    if(!taskId)throw Error("Attio не вернул номер задачи");
+  }
+  await env.AMAPS_DB.prepare("UPDATE amaps_leads SET task_id=? WHERE id=?").bind(taskId,row.id).run();
+  const verified=await attioRequest(env,"/tasks/"+encodeURIComponent(taskId));
+  if(verified.data?.id?.task_id!==taskId||!String(verified.data?.content||"").includes(marker))
+    throw Error("Задача не подтверждена обратным чтением");
+  await env.AMAPS_DB.prepare("UPDATE amaps_leads SET task_status='confirmed' WHERE id=?").bind(row.id).run();
+  return true;
+}
 async function sendReceipt(env,row) {
   if(row.mail_status==="accepted"||row.mail_status==="uncertain")return;
   const text=[
@@ -155,6 +181,13 @@ async function workLead(env,id) {
       await env.AMAPS_DB.prepare("UPDATE amaps_leads SET last_error=? WHERE id=?")
         .bind("Запись СРМ: "+errMessage(e),id).run();
     }
+    try {
+      const fresh=await env.AMAPS_DB.prepare("SELECT * FROM amaps_leads WHERE id=?").bind(id).first();
+      if(fresh?.attio_status==="confirmed")await ensureQualificationTask(env,fresh);
+    } catch(e) {
+      await env.AMAPS_DB.prepare("UPDATE amaps_leads SET last_error=? WHERE id=?")
+        .bind("Задача квалификации: "+errMessage(e),id).run();
+    }
     // Уведомление — только на корпоративный адрес, никаких исходящих исполнителям/заказчикам.
     try {await sendReceipt(env,row);} catch(e) {
       await env.AMAPS_DB.prepare("UPDATE amaps_leads SET last_error=? WHERE id=?")
@@ -173,7 +206,7 @@ export default {
         "access-control-allow-methods":"POST, OPTIONS",
         "access-control-allow-headers":"content-type","access-control-max-age":"86400","vary":"Origin"}});
     }
-    const configured=Boolean(env.AMAPS_DB&&env.AMAPS_ATTACHMENTS&&env.ATTIO_API_KEY&&env.RESEND_API_KEY);
+    const configured=Boolean(env.AMAPS_DB&&env.AMAPS_ATTACHMENTS&&env.ATTIO_API_KEY&&env.RESEND_API_KEY&&env.AMAPS_ASSIGNEE_MEMBER_ID);
     if(request.method==="GET") {
       return response({ok:configured,service:"amaps-form",storage_configured:Boolean(env.AMAPS_DB)},configured?200:503,origin);
     }
@@ -229,10 +262,10 @@ export default {
     }
   },
   async scheduled(event,env,ctx) {
-    if(!env.AMAPS_DB||!env.AMAPS_ATTACHMENTS||!env.ATTIO_API_KEY||!env.RESEND_API_KEY)return;
+    if(!env.AMAPS_DB||!env.AMAPS_ATTACHMENTS||!env.ATTIO_API_KEY||!env.RESEND_API_KEY||!env.AMAPS_ASSIGNEE_MEMBER_ID)return;
     const cutoff=Date.now()-120000;
     const pending=await env.AMAPS_DB.prepare(
-      "SELECT id FROM amaps_leads WHERE (attio_status!='confirmed' OR mail_status='pending') AND lease_until<? AND attempts<30 ORDER BY created_at ASC LIMIT 25"
+      "SELECT id FROM amaps_leads WHERE (attio_status!='confirmed' OR task_status!='confirmed' OR mail_status='pending') AND lease_until<? AND attempts<30 ORDER BY created_at ASC LIMIT 25"
     ).bind(cutoff).all();
     for(const row of pending.results||[]) {
       try {await workLead(env,row.id);}catch{/* запись останется на следующую проверку */}
