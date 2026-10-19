@@ -122,6 +122,11 @@ export default {
     const name = clean(form.get("name"), 120);
     const contact = clean(form.get("contact"), 180);
     const task = clean(form.get("task"), 5000);
+    const submittedId = clean(form.get("submission_id"), 80);
+    if (submittedId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(submittedId)) {
+      return json({ ok: false, error: "Некорректный идентификатор обращения." }, 400, origin);
+    }
+    const submissionId = submittedId || crypto.randomUUID();
 
     if (!["Заказчик", "Исполнитель"].includes(role)) {
       return json({ ok: false, error: "Укажите тип обращения." }, 400, origin);
@@ -149,7 +154,7 @@ export default {
       });
     }
 
-    const subject = `${role}: обращение с сайта АМАПС — ${company}`;
+    const subject = `[САЙТ ${submissionId}] ${role}: обращение с сайта АМАПС — ${company}`;
 
     const text = [
       `Тип обращения: ${role}`,
@@ -160,7 +165,8 @@ export default {
       "Описание:",
       task,
       "",
-      "Источник: форма amaps-pro.ru"
+      "Источник: форма amaps-pro.ru",
+      `Идентификатор обращения: ${submissionId}`
     ].join("\n");
 
     const html = `
@@ -173,6 +179,7 @@ export default {
       <p style="white-space:pre-wrap">${escapeHtml(task)}</p>
       <hr>
       <p style="color:#667">Источник: форма amaps-pro.ru</p>
+      <p style="color:#667">Идентификатор обращения: ${escapeHtml(submissionId)}</p>
     `;
 
     const payload = {
@@ -197,7 +204,8 @@ export default {
         method: "POST",
         headers: {
           "authorization": `Bearer ${env.RESEND_API_KEY}`,
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "idempotency-key": `amaps-site-${submissionId}`
         },
         body: JSON.stringify(payload)
       });
@@ -219,7 +227,10 @@ export default {
     return json(
       {
         ok: true,
-        message: "Обращение отправлено. АМАПС получил ваши данные."
+        submission_id: submissionId,
+        delivery_state: "accepted_by_mail_provider",
+        crm_registered: false,
+        message: "Обращение принято почтовым сервисом. Регистрация в СРМ ещё не подтверждена. Сохраните номер обращения."
       },
       200,
       origin
