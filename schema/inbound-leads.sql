@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS amaps_leads (
   attio_status TEXT NOT NULL DEFAULT 'pending'
     CHECK (attio_status IN ('pending','confirmed')),
   attio_record_id TEXT,
+  task_status TEXT NOT NULL DEFAULT 'pending' CHECK(task_status IN ('pending','confirmed')),
+  task_id TEXT,
   mail_status TEXT NOT NULL DEFAULT 'pending'
     CHECK (mail_status IN ('pending','accepted','uncertain')),
   resend_id TEXT,
