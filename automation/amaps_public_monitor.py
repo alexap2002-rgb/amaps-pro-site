@@ -85,23 +85,41 @@ def find_links(html, base, pattern):
             found[u] = link['text'].strip()[:180]
     return list(found.items())
 
+def canonical_url(url):
+    p = urllib.parse.urlparse(url)
+    if p.hostname == 'metalloobrabotchiki.ru' or (p.hostname or '').endswith('.metalloobrabotchiki.ru'):
+        return 'https://metalloobrabotchiki.ru' + p.path
+    return p.scheme + '://' + p.netloc + p.path
+
 def rfq_details(url, html, now, title=''):
     page = Page()
     page.feed(html)
     plain = re.sub(r'\s+', ' ', page.text_value())
-    lowered = plain.lower()
+    if 'Описание заказа' in plain:
+        scope = plain.split('Описание заказа', 1)[1].split('Контакты заказчика', 1)[0]
+    else:
+        scope = plain
+    lowered = scope.lower()
     dates = []
     for raw in re.findall(r'\b([0-3]?\d\.[01]?\d\.20\d\d)\b', plain):
-        try: dates.append(dt.datetime.strptime(raw, '%d.%m.%Y').date())
-        except ValueError: pass
+        try:
+            dates.append(dt.datetime.strptime(raw, '%d.%m.%Y').date())
+        except ValueError:
+            pass
     recent = any(now - dt.timedelta(days=15) <= d <= now + dt.timedelta(days=2) for d in dates)
-    relevance = sum(2 for x in POSITIVE if x in lowered) - sum(1 for x in NEGATIVE if x in lowered)
-    hidden = any(b in lowered for b in BLOCKS)
-    return {'url': url, 'title': title or plain[:150], 'relevance': relevance,
+    material = any(t in lowered for t in ('алюмини', 'д16т', 'амг', 'ад31', 'ад0', '6061', '7075'))
+    edm = 'электроэроз' in lowered or 'проволочн' in lowered
+    relevance = (3 if material else 0) + (3 if edm else 0)
+    if material or edm:
+        relevance += sum(1 for x in ('фрезер', 'точен', 'токар', 'корпус', 'крышк', 'плит') if x in lowered)
+    hidden = any(b in plain.lower() for b in BLOCKS)
+    status = ('НЕ ПРИНЯТА — сведения заказчика скрыты; прямой контакт не установлен'
+              if hidden else 'СИГНАЛ — нужны первоисточник покупателя, полный комплект ТЗ и подтверждение свободной потребности')
+    return {'url': canonical_url(url), 'title': title or scope[:150], 'relevance': relevance,
+            'aluminum_or_edm_in_order_description': material or edm,
             'recent_date_detected': recent, 'dates_on_page': sorted(set(str(d) for d in dates))[:10],
             'buyer_contact_hidden': hidden, 'buyer_and_live_need_confirmed': False,
-            'status': 'СИГНАЛ — требует ручной проверки покупателя, полного ТЗ и свободной потребности',
-            'extract': plain[:550]}
+            'status': status, 'extract': scope[:550]}
 
 def run():
     now = dt.datetime.now(dt.timezone.utc).date()
@@ -110,6 +128,7 @@ def run():
         try: known = set(json.loads(STATE.read_text(encoding='utf-8')).get('seen_urls', []))
         except Exception: pass
     robots_cache = {}
+    seen_in_run = set()
     errors, results, checked = [], [], 0
     for key, base, path_pattern in SOURCES:
         try:
@@ -117,17 +136,19 @@ def run():
                 errors.append({'source': key, 'error': 'robots.txt: prohibited or unavailable'}); continue
             html = get(base)
             urls = find_links(html, base, path_pattern)
-            if not urls and key == 'tomsk_subcontract':
-                results.append(rfq_details(base, html, now, 'Томский центр субконтрактации: каталог'))
             for url, title in urls[:5]:
+                identity = canonical_url(url)
+                if identity in seen_in_run:
+                    continue
+                seen_in_run.add(identity)
                 if not robots_allowed(url, robots_cache): continue
                 checked += 1
                 try:
                     result = rfq_details(url, get(url), now, title)
-                    if result['recent_date_detected'] and result['relevance'] >= 2:
-                        result['new_since_previous_run'] = url not in known
+                    if result['recent_date_detected'] and result['aluminum_or_edm_in_order_description']:
+                        result['new_since_previous_run'] = identity not in known
                         results.append(result)
-                        known.add(url)
+                        known.add(identity)
                 except Exception as exc:
                     errors.append({'source': key, 'url': url, 'error': type(exc).__name__ + ': ' + str(exc)[:130]})
                 time.sleep(1.2)
