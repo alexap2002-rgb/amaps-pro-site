@@ -1,0 +1,41 @@
+name: AMAPS public demand monitor
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/amaps-public-monitor.yml'
+      - 'automation/amaps_public_monitor.py'
+permissions:
+  contents: read
+concurrency:
+  group: amaps-public-demand
+  cancel-in-progress: false
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore public-URL deduplication cache
+        uses: actions/cache/restore@v4
+        with:
+          path: automation/state.json
+          key: amaps-public-${{ github.run_id }}
+          restore-keys: amaps-public-
+      - name: Check public RFQs without auth or mail
+        run: python3 automation/amaps_public_monitor.py
+      - name: Save public-URL deduplication cache
+        uses: actions/cache/save@v4
+        with:
+          path: automation/state.json
+          key: amaps-public-${{ github.run_id }}
+      - name: Save scan report for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amaps-public-monitor
+          path: automation/report.json
+          if-no-files-found: warn
+          retention-days: 7
