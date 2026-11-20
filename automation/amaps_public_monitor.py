@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Read-only monitor of PUBLIC manufacturing RFQs; never logs in or sends messages."""
+import datetime as dt
+import json
+import os
+import re
+import sys
+import time
+import urllib.parse
+import urllib.request
+import urllib.robotparser
+from pathlib import Path
+from html.parser import HTMLParser
+
+ROOT = Path(__file__).resolve().parent
+OUTPUT = ROOT / 'report.json'
+STATE = ROOT / 'state.json'
+SOURCES = [
+    ('metalorders', 'https://metalloobrabotchiki.ru/orders', r'^/orders/\d+$'),
+    ('moscow_orders', 'https://msk.metalloobrabotchiki.ru/orders', r'^/orders/\d+$'),
+    ('ceh', 'https://xn----7sbocllqn1abl5bl1g.xn--p1ai/zakazy', r'^/zakazy/[a-z0-9]{12,}$'),
+    ('tomsk_subcontract', 'https://subcontract.tomsk.ru/uslugi/proizvodstvennye-zakazy/', r'^/uslugi/[^#?]+$'),
+]
+BLOCKS = ('подключите подходящий «тариф»', 'разовый доступ', 'контакты заказчика скрыты', 'войдите как исполнитель', 'купите доступ')
+POSITIVE = ('алюмини', 'д16т', 'амг', 'ад31', 'фрезер', 'точен', 'токар', 'электроэроз', 'корпус', 'крышк', 'плит', 'чпу', 'механообработ')
+NEGATIVE = ('сварка', 'чугун', 'сталь 20', 'сталь 45', 'пружин', 'гибка', 'отливк', 'литьё')
+UA = 'AMAPS-PublicDemandMonitor/1.0 (public pages only; no automation of messages)'
+
+class Page(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+        self.text = []
+        self.active = None
+    def handle_starttag(self, tag, attrs):
+        if tag == 'a':
+            self.active = {'href': dict(attrs).get('href', ''), 'text': ''}
+    def handle_data(self, data):
+        if data.strip():
+            self.text.append(data.strip())
+            if self.active is not None:
+                self.active['text'] += data.strip() + ' '
+    def handle_endtag(self, tag):
+        if tag == 'a' and self.active is not None:
+            self.links.append(self.active)
+            self.active = None
+    def text_value(self):
+        return ' '.join(self.text)
+
+def get(url, timeout=16):
+    req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml'})
+    with urllib.request.urlopen(req, timeout=timeout) as rsp:
+        if rsp.status != 200:
+            raise ValueError('HTTP ' + str(rsp.status))
+        typ = rsp.headers.get('Content-Type', '')
+        if 'html' not in typ:
+            raise ValueError('Not HTML: ' + typ[:60])
+        return rsp.read(1_500_000).decode('utf-8', errors='replace')
+
+def robots_allowed(url, cache):
+    u = urllib.parse.urlparse(url)
+    host = u.scheme + '://' + u.netloc
+    if host not in cache:
+        rp = urllib.robotparser.RobotFileParser()
+        rp.set_url(host + '/robots.txt')
+        try:
+            rp.read()
+            cache[host] = rp
+        except Exception:
+            cache[host] = None
+    rp = cache[host]
+    return rp is not None and rp.can_fetch(UA, url)
+
+def find_links(html, base, pattern):
+    page = Page()
+    page.feed(html)
+    base_host = urllib.parse.urlparse(base).netloc
+    found = {}
+    for link in page.links:
+        u = urllib.parse.urljoin(base, link['href']).split('#')[0]
+        p = urllib.parse.urlparse(u)
+        if p.netloc != base_host or not re.fullmatch(pattern, p.path, flags=re.I):
+            continue
+        if u not in found:
+            found[u] = link['text'].strip()[:180]
+    return list(found.items())
+
+def rfq_details(url, html, now, title=''):
+    page = Page()
+    page.feed(html)
+    plain = re.sub(r'\s+', ' ', page.text_value())
+    lowered = plain.lower()
+    dates = []
+    for raw in re.findall(r'\b([0-3]?\d\.[01]?\d\.20\d\d)\b', plain):
+        try: dates.append(dt.datetime.strptime(raw, '%d.%m.%Y').date())
+        except ValueError: pass
+    recent = any(now - dt.timedelta(days=15) <= d <= now + dt.timedelta(days=2) for d in dates)
+    relevance = sum(2 for x in POSITIVE if x in lowered) - sum(1 for x in NEGATIVE if x in lowered)
+    hidden = any(b in lowered for b in BLOCKS)
+    return {'url': url, 'title': title or plain[:150], 'relevance': relevance,
+            'recent_date_detected': recent, 'dates_on_page': sorted(set(str(d) for d in dates))[:10],
+            'buyer_contact_hidden': hidden, 'buyer_and_live_need_confirmed': False,
+            'status': 'СИГНАЛ — требует ручной проверки покупателя, полного ТЗ и свободной потребности',
+            'extract': plain[:550]}
+
+def run():
+    now = dt.datetime.now(dt.timezone.utc).date()
+    known = set()
+    if STATE.exists():
+        try: known = set(json.loads(STATE.read_text(encoding='utf-8')).get('seen_urls', []))
+        except Exception: pass
+    robots_cache = {}
+    errors, results, checked = [], [], 0
+    for key, base, path_pattern in SOURCES:
+        try:
+            if not robots_allowed(base, robots_cache):
+                errors.append({'source': key, 'error': 'robots.txt: prohibited or unavailable'}); continue
+            html = get(base)
+            urls = find_links(html, base, path_pattern)
+            if not urls and key == 'tomsk_subcontract':
+                results.append(rfq_details(base, html, now, 'Томский центр субконтрактации: каталог'))
+            for url, title in urls[:5]:
+                if not robots_allowed(url, robots_cache): continue
+                checked += 1
+                try:
+                    result = rfq_details(url, get(url), now, title)
+                    if result['recent_date_detected'] and result['relevance'] >= 2:
+                        result['new_since_previous_run'] = url not in known
+                        results.append(result)
+                        known.add(url)
+                except Exception as exc:
+                    errors.append({'source': key, 'url': url, 'error': type(exc).__name__ + ': ' + str(exc)[:130]})
+                time.sleep(1.2)
+        except Exception as exc:
+            errors.append({'source': key, 'error': type(exc).__name__ + ': ' + str(exc)[:130]})
+    results.sort(key=lambda x:(x.get('new_since_previous_run', False), x['relevance']), reverse=True)
+    report = {'time_utc': dt.datetime.now(dt.timezone.utc).isoformat(), 'mode': 'public-read-only',
+              'sources_checked': len(SOURCES), 'detail_pages_checked': checked,
+              'new_preliminary_signals': sum(bool(r.get('new_since_previous_run')) for r in results),
+              'confirmed_qualified_orders': 0, 'messages_sent': 0,
+              'items': results[:20], 'errors': errors}
+    OUTPUT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:]}, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(json.dumps({'sources': len(SOURCES), 'details': checked, 'preliminary': report['new_preliminary_signals'],
+                      'qualified': 0, 'errors': len(errors)}, ensure_ascii=False))
+    if os.getenv('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as s:
+            s.write('## АМАПС — поиск открытого прямого спроса\n\n')
+            s.write(f"Проверено карточек: {checked}. Новых предварительных сигналов: {report['new_preliminary_signals']}. ")
+            s.write('Квалифицированных заказов без ручной проверки: **0**. Сообщений не отправлялось.\n\n')
+            s.write('Вложение amaps-public-monitor содержит проверенные URL и причины ошибок.\n')
+            for row in results[:8]:
+                s.write('- ' + row['title'].replace('\n',' ')[:100] + ': ' + row['url'] + '\n')
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(run())
