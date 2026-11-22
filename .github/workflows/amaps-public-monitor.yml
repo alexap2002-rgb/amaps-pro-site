@@ -1,7 +1,8 @@
 name: AMAPS public demand monitor
 on:
   schedule:
-    - cron: '17 * * * *'
+    # Three independent attempts per hour. GitHub schedule is best-effort.
+    - cron: '9,29,49 * * * *'
   workflow_dispatch:
   push:
     paths:
@@ -18,24 +19,49 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+      - name: Compute UTC hourly slot
+        id: slot
+        run: echo "hour=$(date -u +%Y%m%d%H)" >> "$GITHUB_OUTPUT"
+      - name: Restore successful hourly execution marker
+        if: github.event_name == 'schedule'
+        id: hourcache
+        uses: actions/cache/restore@v4
+        with:
+          path: automation/hour-marker.txt
+          key: amaps-public-hour-${{ steps.slot.outputs.hour }}
       - name: Restore public-URL deduplication cache
+        if: steps.hourcache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
         with:
           path: automation/state.json
           key: amaps-public-${{ github.run_id }}
           restore-keys: amaps-public-
       - name: Check public RFQs without auth or mail
+        if: steps.hourcache.outputs.cache-hit != 'true'
         run: python3 automation/amaps_public_monitor.py
       - name: Save public-URL deduplication cache
+        if: steps.hourcache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: automation/state.json
           key: amaps-public-${{ github.run_id }}
+      - name: Mark this UTC hour as successfully checked
+        if: github.event_name == 'schedule' && steps.hourcache.outputs.cache-hit != 'true'
+        run: echo "${{ github.run_id }} checked UTC hour ${{ steps.slot.outputs.hour }}" > automation/hour-marker.txt
+      - name: Save UTC-hour marker
+        if: github.event_name == 'schedule' && steps.hourcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: automation/hour-marker.txt
+          key: amaps-public-hour-${{ steps.slot.outputs.hour }}
       - name: Save scan report for review
-        if: always()
+        if: always() && steps.hourcache.outputs.cache-hit != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: amaps-public-monitor
           path: automation/report.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Summary of deduplicated hourly attempt
+        if: steps.hourcache.outputs.cache-hit == 'true'
+        run: echo "Already checked this UTC hour; no duplicate scan." >> "$GITHUB_STEP_SUMMARY"
