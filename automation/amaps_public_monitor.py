@@ -20,6 +20,8 @@ SOURCES = [
     ('moscow_orders', 'https://msk.metalloobrabotchiki.ru/orders', r'^/orders/\d+$'),
     ('ceh', 'https://xn----7sbocllqn1abl5bl1g.xn--p1ai/zakazy', r'^/zakazy/[a-z0-9]{12,}$'),
     ('tomsk_subcontract', 'https://subcontract.tomsk.ru/uslugi/proizvodstvennye-zakazy/', r'^/uslugi/[^#?]+$'),
+    ('energybase_parts', 'https://energybase.ru/tender/catalog/parts-manufacturing', r'^/tender/[0-9a-f-]{20,}$'),
+    ('kontur_metalwork', 'https://zakupki.kontur.ru/category/raboty-i-uslugi-po-metalloobrabotke', r'^/(?:IS\d+|\d{5,}(?:_\d+)?)$'),
 ]
 BLOCKS = ('подключите подходящий «тариф»', 'разовый доступ', 'контакты заказчика скрыты', 'войдите как исполнитель', 'купите доступ')
 POSITIVE = ('алюмини', 'д16т', 'амг', 'ад31', 'фрезер', 'точен', 'токар', 'электроэроз', 'корпус', 'крышк', 'плит', 'чпу', 'механообработ')
@@ -106,6 +108,14 @@ def rfq_details(url, html, now, title=''):
             dates.append(dt.datetime.strptime(raw, '%d.%m.%Y').date())
         except ValueError:
             pass
+    months = {'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
+              'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12}
+    months_pattern = '|'.join(months)
+    for m in re.finditer(r'\b([0-3]?\d)\s+(' + months_pattern + r')\s+(20\d{2})\b', plain.lower()):
+        try:
+            dates.append(dt.date(int(m.group(3)), months[m.group(2)], int(m.group(1))))
+        except ValueError:
+            pass
     recent = any(now - dt.timedelta(days=15) <= d <= now + dt.timedelta(days=2) for d in dates)
     material = any(t in lowered for t in ('алюмини', 'д16т', 'амг', 'ад31', 'ад0', '6061', '7075'))
     edm = 'электроэроз' in lowered or 'проволочн' in lowered
@@ -128,6 +138,7 @@ def run():
         try: known = set(json.loads(STATE.read_text(encoding='utf-8')).get('seen_urls', []))
         except Exception: pass
     robots_cache = {}
+    indexes_opened = 0
     seen_in_run = set()
     errors, results, checked = [], [], 0
     for key, base, path_pattern in SOURCES:
@@ -135,7 +146,9 @@ def run():
             if not robots_allowed(base, robots_cache):
                 errors.append({'source': key, 'error': 'robots.txt: prohibited or unavailable'}); continue
             html = get(base)
+            indexes_opened += 1
             urls = find_links(html, base, path_pattern)
+            urls.sort(key=lambda item: sum(k in item[1].lower() for k in ('алюмини', 'д16т', 'амг', 'корпус', 'крышк', 'детал', 'фрезер', 'электроэроз')), reverse=True)
             for url, title in urls[:5]:
                 identity = canonical_url(url)
                 if identity in seen_in_run:
@@ -156,18 +169,18 @@ def run():
             errors.append({'source': key, 'error': type(exc).__name__ + ': ' + str(exc)[:130]})
     results.sort(key=lambda x:(x.get('new_since_previous_run', False), x['relevance']), reverse=True)
     report = {'time_utc': dt.datetime.now(dt.timezone.utc).isoformat(), 'mode': 'public-read-only',
-              'sources_checked': len(SOURCES), 'detail_pages_checked': checked,
+              'sources_configured': len(SOURCES), 'indexes_opened': indexes_opened, 'detail_pages_checked': checked,
               'new_preliminary_signals': sum(bool(r.get('new_since_previous_run')) for r in results),
               'confirmed_qualified_orders': 0, 'messages_sent': 0,
               'items': results[:20], 'errors': errors}
     OUTPUT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:]}, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(json.dumps({'sources': len(SOURCES), 'details': checked, 'preliminary': report['new_preliminary_signals'],
+    print(json.dumps({'configured': len(SOURCES), 'indexes_opened': indexes_opened, 'details': checked, 'preliminary': report['new_preliminary_signals'],
                       'qualified': 0, 'errors': len(errors)}, ensure_ascii=False))
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as s:
             s.write('## АМАПС — поиск открытого прямого спроса\n\n')
-            s.write(f"Проверено карточек: {checked}. Новых предварительных сигналов: {report['new_preliminary_signals']}. ")
+            s.write(f"Доступно источников: {indexes_opened} из {len(SOURCES)}. Проверено карточек: {checked}. Новых предварительных сигналов: {report['new_preliminary_signals']}. ")
             s.write('Квалифицированных заказов без ручной проверки: **0**. Сообщений не отправлялось.\n\n')
             s.write('Вложение amaps-public-monitor содержит проверенные URL и причины ошибок.\n')
             for row in results[:8]:
