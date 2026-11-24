@@ -34,15 +34,24 @@ class Page(HTMLParser):
         self.links = []
         self.text = []
         self.active = None
+        self.skip = 0
     def handle_starttag(self, tag, attrs):
+        if tag in ('script', 'style', 'noscript', 'nav', 'footer', 'header'):
+            self.skip += 1
+        if self.skip:
+            return
         if tag == 'a':
             self.active = {'href': dict(attrs).get('href', ''), 'text': ''}
     def handle_data(self, data):
-        if data.strip():
+        if not self.skip and data.strip():
             self.text.append(data.strip())
             if self.active is not None:
                 self.active['text'] += data.strip() + ' '
     def handle_endtag(self, tag):
+        if tag in ('script', 'style', 'noscript', 'nav', 'footer', 'header'):
+            self.skip = max(0, self.skip - 1)
+        if self.skip:
+            return
         if tag == 'a' and self.active is not None:
             self.links.append(self.active)
             self.active = None
@@ -116,19 +125,35 @@ def rfq_details(url, html, now, title=''):
             dates.append(dt.date(int(m.group(3)), months[m.group(2)], int(m.group(1))))
         except ValueError:
             pass
-    recent = any(now - dt.timedelta(days=15) <= d <= now + dt.timedelta(days=2) for d in dates)
+    # Only explicitly labelled deadlines count; unrelated dates are not evidence.
+    deadline_dates = []
+    for m in re.finditer(r'(?:окончание(?:\s+при[её]ма)?|при[её]м\s+(?:заявок|предложений)\s+до|срок\s+подачи|подать\s+до|дата\s+окончания)[^0-9]{0,45}([0-3]?\d\.[01]?\d\.20\d\d)', plain.lower()):
+        try:
+            deadline_dates.append(dt.datetime.strptime(m.group(1), '%d.%m.%Y').date())
+        except ValueError:
+            pass
+    recent = bool(deadline_dates) and min(deadline_dates) >= now
+    closed = bool(re.search(r'при[её]м (?:заявок|предложений) заверш[её]н|закупка (?:завершена|отменена)|заказ закрыт|договор заключ[её]н', plain.lower()))
+    recent = recent and not closed
     material = any(t in lowered for t in ('алюмини', 'д16т', 'амг', 'ад31', 'ад0', '6061', '7075'))
     edm = 'электроэроз' in lowered or 'проволочн' in lowered
     relevance = (3 if material else 0) + (3 if edm else 0)
     if material or edm:
         relevance += sum(1 for x in ('фрезер', 'точен', 'токар', 'корпус', 'крышк', 'плит') if x in lowered)
     hidden = any(b in plain.lower() for b in BLOCKS)
+    negative = any(b in lowered for b in NEGATIVE)
+    demand = bool(re.search(r'изготовлен|требуется|закупк|запрос\s+кп|ищем\s+подрядчика|заказ\s+на', lowered))
+    scoped = 'Описание заказа' in plain
+    # Conservative preliminary filter, never automatic qualification.
+    eligible = recent and (material or edm) and demand and not hidden and not negative and scoped
     status = ('НЕ ПРИНЯТА — сведения заказчика скрыты; прямой контакт не установлен'
               if hidden else 'СИГНАЛ — нужны первоисточник покупателя, полный комплект ТЗ и подтверждение свободной потребности')
     return {'url': canonical_url(url), 'title': title or scope[:150], 'relevance': relevance,
             'aluminum_or_edm_in_order_description': material or edm,
             'recent_date_detected': recent, 'dates_on_page': sorted(set(str(d) for d in dates))[:10],
             'buyer_contact_hidden': hidden, 'buyer_and_live_need_confirmed': False,
+            'eligible_preliminary': eligible, 'deadline_dates': [str(d) for d in deadline_dates],
+            'negative_material_or_process': negative, 'explicit_order_scope': scoped,
             'status': status, 'extract': scope[:550]}
 
 def run():
@@ -141,6 +166,8 @@ def run():
     indexes_opened = 0
     seen_in_run = set()
     errors, results, checked = [], [], 0
+    successful_details = 0
+    rejected = 0
     for key, base, path_pattern in SOURCES:
         try:
             if not robots_allowed(base, robots_cache):
@@ -149,7 +176,7 @@ def run():
             indexes_opened += 1
             urls = find_links(html, base, path_pattern)
             urls.sort(key=lambda item: sum(k in item[1].lower() for k in ('алюмини', 'д16т', 'амг', 'корпус', 'крышк', 'детал', 'фрезер', 'электроэроз')), reverse=True)
-            for url, title in urls[:5]:
+            for url, title in urls[:8]:
                 identity = canonical_url(url)
                 if identity in seen_in_run:
                     continue
@@ -158,10 +185,13 @@ def run():
                 checked += 1
                 try:
                     result = rfq_details(url, get(url), now, title)
-                    if result['recent_date_detected'] and result['aluminum_or_edm_in_order_description']:
+                    successful_details += 1
+                    if result['eligible_preliminary']:
                         result['new_since_previous_run'] = identity not in known
                         results.append(result)
                         known.add(identity)
+                    else:
+                        rejected += 1
                 except Exception as exc:
                     errors.append({'source': key, 'url': url, 'error': type(exc).__name__ + ': ' + str(exc)[:130]})
                 time.sleep(1.2)
@@ -172,6 +202,8 @@ def run():
               'sources_configured': len(SOURCES), 'indexes_opened': indexes_opened, 'detail_pages_checked': checked,
               'new_preliminary_signals': sum(bool(r.get('new_since_previous_run')) for r in results),
               'confirmed_qualified_orders': 0, 'messages_sent': 0,
+              'successful_details': successful_details, 'rejected_details': rejected,
+              'scan_healthy': indexes_opened > 0 and successful_details > 0,
               'items': results[:20], 'errors': errors}
     OUTPUT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:]}, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -185,7 +217,7 @@ def run():
             s.write('Вложение amaps-public-monitor содержит проверенные URL и причины ошибок.\n')
             for row in results[:8]:
                 s.write('- ' + row['title'].replace('\n',' ')[:100] + ': ' + row['url'] + '\n')
-    return 0
+    return 0 if report['scan_healthy'] else 2
 
 if __name__ == '__main__':
     sys.exit(run())
