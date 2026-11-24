@@ -209,6 +209,18 @@ def run():
     STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:]}, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({'configured': len(SOURCES), 'indexes_opened': indexes_opened, 'details': checked, 'preliminary': report['new_preliminary_signals'],
                       'qualified': 0, 'errors': len(errors)}, ensure_ascii=False))
+    # Machine-readable fallback for read-only consumers without ZIP extraction.
+    # Do not log page extracts, contact details, credentials, or nonpublic data.
+    log_report = {k: report[k] for k in (
+        'time_utc', 'sources_configured', 'indexes_opened',
+        'detail_pages_checked', 'successful_details', 'rejected_details',
+        'new_preliminary_signals', 'confirmed_qualified_orders',
+        'messages_sent', 'scan_healthy')}
+    log_report['items'] = [{k: row.get(k) for k in (
+        'url', 'relevance', 'deadline_dates', 'new_since_previous_run',
+        'eligible_preliminary', 'buyer_and_live_need_confirmed')} for row in report['items']]
+    log_report['errors'] = [{'source': e.get('source'), 'error': e.get('error', '').split(':', 1)[0]} for e in errors]
+    print('AMAPS_REPORT_V1 ' + json.dumps(log_report, ensure_ascii=False, separators=(',', ':')), flush=True)
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as s:
             s.write('## АМАПС — поиск открытого прямого спроса\n\n')
