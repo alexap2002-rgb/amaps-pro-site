@@ -24,7 +24,7 @@ SOURCES = [
     ('energybase_parts', 'https://energybase.ru/tender/catalog/parts-manufacturing', r'^/tender/[0-9a-f-]{20,}$'),
     ('kontur_metalwork', 'https://zakupki.kontur.ru/category/raboty-i-uslugi-po-metalloobrabotke', r'^/(?:IS\d+|\d{5,}(?:_\d+)?)$'),
 ]
-BLOCKS = ('подключите подходящий «тариф»', 'разовый доступ', 'контакты заказчика скрыты', 'войдите как исполнитель', 'купите доступ')
+BLOCKS = ('подключите подходящий «тариф»', 'разовый доступ', 'контакты заказчика скрыты', 'войдите как исполнитель', 'купите доступ', 'авторизируйтесь как исполнитель', 'чертежи скрыты')
 POSITIVE = ('алюмини', 'д16т', 'амг', 'ад31', 'фрезер', 'точен', 'токар', 'электроэроз', 'корпус', 'крышк', 'плит', 'чпу', 'механообработ')
 NEGATIVE = ('сварка', 'чугун', 'сталь 20', 'сталь 45', 'пружин', 'гибка', 'отливк', 'литьё')
 UA = 'AMAPS-PublicDemandMonitor/1.0 (public pages only; no automation of messages)'
@@ -128,7 +128,7 @@ def rfq_details(url, html, now, title=''):
             pass
     # Only explicitly labelled deadlines count; unrelated dates are not evidence.
     deadline_dates = []
-    for m in re.finditer(r'(?:окончание(?:\s+при[её]ма)?|при[её]м\s+(?:заявок|предложений)\s+до|срок\s+подачи|подать\s+до|дата\s+окончания)[^0-9]{0,45}([0-3]?\d\.[01]?\d\.20\d\d)', plain.lower()):
+    for m in re.finditer(r'(?:окончание(?:\s+при[её]ма)?|при[её]м\s+(?:заявок|предложений)\s+до|срок\s+подачи|подать\s+до|дата\s+окончания|сбор\s+кп\s+по|сбор\s+кп\s+до|сбор\s+предложений\s+до)[^0-9]{0,45}([0-3]?\d\.[01]?\d\.20\d\d)', plain.lower()):
         try:
             deadline_dates.append(dt.datetime.strptime(m.group(1), '%d.%m.%Y').date())
         except ValueError:
@@ -174,7 +174,7 @@ def run():
         try:
             saved = json.loads(STATE.read_text(encoding='utf-8'))
             known = set(saved.get('seen_urls', []))
-            history = saved.get('checked_urls', {})
+            history = saved.get('checked_urls', {}) if saved.get('parser_revision') == 2 else {}
             if not isinstance(history, dict):
                 history = {}
         except (OSError, ValueError, TypeError):
@@ -257,7 +257,7 @@ def run():
               'items': results[:20], 'errors': errors}
     OUTPUT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     history = dict(sorted(history.items(), key=lambda item: item[1].get('checked_at', 0), reverse=True)[:5000])
-    STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:], 'checked_urls': history}, ensure_ascii=False, indent=2), encoding='utf-8')
+    STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:], 'checked_urls': history, 'parser_revision': 2}, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({'configured': len(SOURCES), 'indexes_opened': indexes_opened, 'details': checked, 'preliminary': report['new_preliminary_signals'],
                       'qualified': 0, 'errors': len(errors)}, ensure_ascii=False))
     # Machine-readable fallback for read-only consumers without ZIP extraction.
@@ -287,12 +287,14 @@ def self_test():
     base = '<p>Описание заказа</p><p>Требуется изготовление корпуса Д16Т</p><p>Контакты заказчика</p><p>Окончание приема заявок: 30.11.2026</p>'
     url = 'https://example.org/orders/1'
     assert rfq_details(url, base, now)['eligible_preliminary']
+    assert rfq_details(url, base.replace('Окончание приема заявок:', 'Сбор КП по:'), now)['eligible_preliminary']
+    assert not rfq_details(url, base.replace('Окончание приема заявок:', 'Сбор КП по:').replace('30.11.2026', '20.11.2026'), now)['eligible_preliminary']
     assert 'deadline_expired' in rfq_details(url, base.replace('30.11.2026', '20.11.2026'), now)['rejection_reasons']
     assert 'contact_hidden' in rfq_details(url, base + ' контакты заказчика скрыты', now)['rejection_reasons']
     assert 'order_scope_unrecognized' in rfq_details(url, base.replace('Описание заказа', 'Меню'), now)['rejection_reasons']
     assert 'material_or_edm_missing' in rfq_details(url, base.replace('Д16Т', 'пластик'), now)['rejection_reasons']
     assert not rfq_details(url, base + ' закупка завершена', now)['eligible_preliminary']
-    print('AMAPS_SELFTEST_OK 6', flush=True)
+    print('AMAPS_SELFTEST_OK 8', flush=True)
 
 if __name__ == '__main__':
     self_test()
