@@ -64,6 +64,8 @@ def get(url, timeout=16):
     with urllib.request.urlopen(req, timeout=timeout) as rsp:
         if rsp.status != 200:
             raise ValueError('HTTP ' + str(rsp.status))
+        if canonical_url(rsp.geturl()) != canonical_url(url):
+            raise ValueError('Redirect to a different resource')
         typ = rsp.headers.get('Content-Type', '')
         if 'html' not in typ:
             raise ValueError('Not HTML: ' + typ[:60])
@@ -107,6 +109,11 @@ def rfq_details(url, html, now, title=''):
     page = Page()
     page.feed(html)
     plain = re.sub(r'\s+', ' ', page.text_value())
+    # Never qualify a listing or a page combining several RFQs as a single order.
+    order_ids = set(re.findall(r'заказ\s*№\s*(\d+)', plain, flags=re.I))
+    expected = re.fullmatch(r'/orders/(\d+)', urllib.parse.urlparse(url).path)
+    is_metalorders = (urllib.parse.urlparse(canonical_url(url)).hostname == 'metalloobrabotchiki.ru')
+    ambiguous_page = len(order_ids) > 1 or (is_metalorders and expected is not None and order_ids != {expected.group(1)})
     if 'Описание заказа' in plain:
         scope = plain.split('Описание заказа', 1)[1].split('Контакты заказчика', 1)[0]
     else:
@@ -133,8 +140,9 @@ def rfq_details(url, html, now, title=''):
             deadline_dates.append(dt.datetime.strptime(m.group(1), '%d.%m.%Y').date())
         except ValueError:
             pass
-    recent = bool(deadline_dates) and min(deadline_dates) >= now
-    closed = bool(re.search(r'при[её]м (?:заявок|предложений) заверш[её]н|закупка (?:завершена|отменена)|заказ закрыт|договор заключ[её]н', plain.lower()))
+    ambiguous_page = ambiguous_page or len(set(deadline_dates)) > 1
+    recent = bool(deadline_dates) and not ambiguous_page and min(deadline_dates) >= now
+    closed = bool(re.search(r'при[её]м (?:заявок|предложений) заверш[её]н|закупка (?:завершена|отменена)|заказ закрыт|\bзакрыт\b|договор заключ[её]н', plain.lower()))
     recent = recent and not closed
     material = any(t in lowered for t in ('алюмини', 'д16т', 'амг', 'ад31', 'ад0', '6061', '7075'))
     edm = 'электроэроз' in lowered or 'проволочн' in lowered
@@ -146,6 +154,7 @@ def rfq_details(url, html, now, title=''):
     demand = bool(re.search(r'изготовлен|требуется|закупк|запрос\s+кп|ищем\s+подрядчика|заказ\s+на', lowered))
     scoped = 'Описание заказа' in plain
     reasons = []
+    if ambiguous_page: reasons.append('ambiguous_order_page')
     if not scoped: reasons.append('order_scope_unrecognized')
     if not deadline_dates: reasons.append('deadline_unrecognized')
     elif min(deadline_dates) < now: reasons.append('deadline_expired')
@@ -155,7 +164,7 @@ def rfq_details(url, html, now, title=''):
     if hidden: reasons.append('contact_hidden')
     if negative: reasons.append('negative_process_or_material')
     # Conservative preliminary filter, never automatic qualification.
-    eligible = recent and (material or edm) and demand and not hidden and not negative and scoped
+    eligible = recent and (material or edm) and demand and not hidden and not negative and scoped and not ambiguous_page
     status = ('НЕ ПРИНЯТА — сведения заказчика скрыты; прямой контакт не установлен'
               if hidden else 'СИГНАЛ — нужны первоисточник покупателя, полный комплект ТЗ и подтверждение свободной потребности')
     return {'url': canonical_url(url), 'title': title or scope[:150], 'relevance': relevance,
@@ -174,7 +183,7 @@ def run():
         try:
             saved = json.loads(STATE.read_text(encoding='utf-8'))
             known = set(saved.get('seen_urls', []))
-            history = saved.get('checked_urls', {}) if saved.get('parser_revision') == 2 else {}
+            history = saved.get('checked_urls', {}) if saved.get('parser_revision') == 3 else {}
             if not isinstance(history, dict):
                 history = {}
         except (OSError, ValueError, TypeError):
@@ -257,7 +266,7 @@ def run():
               'items': results[:20], 'errors': errors}
     OUTPUT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     history = dict(sorted(history.items(), key=lambda item: item[1].get('checked_at', 0), reverse=True)[:5000])
-    STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:], 'checked_urls': history, 'parser_revision': 2}, ensure_ascii=False, indent=2), encoding='utf-8')
+    STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:], 'checked_urls': history, 'parser_revision': 3}, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({'configured': len(SOURCES), 'indexes_opened': indexes_opened, 'details': checked, 'preliminary': report['new_preliminary_signals'],
                       'qualified': 0, 'errors': len(errors)}, ensure_ascii=False))
     # Machine-readable fallback for read-only consumers without ZIP extraction.
@@ -294,7 +303,16 @@ def self_test():
     assert 'order_scope_unrecognized' in rfq_details(url, base.replace('Описание заказа', 'Меню'), now)['rejection_reasons']
     assert 'material_or_edm_missing' in rfq_details(url, base.replace('Д16Т', 'пластик'), now)['rejection_reasons']
     assert not rfq_details(url, base + ' закупка завершена', now)['eligible_preliminary']
-    print('AMAPS_SELFTEST_OK 8', flush=True)
+    metal_url = 'https://metalloobrabotchiki.ru/orders/18356'
+    metal_base = '<p>Заказ №18356</p>' + base
+    assert rfq_details(metal_url, metal_base, now)['eligible_preliminary']
+    assert not rfq_details(metal_url, metal_base + '<p>Закрыт</p>', now)['eligible_preliminary']
+    mixed = metal_base + '<p>Заказ №18389</p><p>Сбор КП по: 11.12.2026</p>'
+    assert 'ambiguous_order_page' in rfq_details(metal_url, mixed, now)['rejection_reasons']
+    assert not rfq_details(metal_url, mixed, now)['eligible_preliminary']
+    assert not rfq_details(metal_url, base, now)['eligible_preliminary']
+    assert not rfq_details(url, base + '<p>Сбор КП по: 11.12.2026</p>', now)['eligible_preliminary']
+    print('AMAPS_SELFTEST_OK 14', flush=True)
 
 if __name__ == '__main__':
     self_test()
