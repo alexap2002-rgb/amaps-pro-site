@@ -36,11 +36,14 @@ jobs:
           path: automation/state.json
           key: amaps-public-${{ github.run_id }}
           restore-keys: amaps-public-
+      - name: Test filters before scanning
+        if: steps.hourcache.outputs.cache-hit != 'true'
+        run: python3 automation/amaps_public_monitor.py --self-test
       - name: Check public RFQs without auth or mail
         if: steps.hourcache.outputs.cache-hit != 'true'
         run: python3 automation/amaps_public_monitor.py
       - name: Save public-URL deduplication cache
-        if: steps.hourcache.outputs.cache-hit != 'true'
+        if: always() && steps.hourcache.outputs.cache-hit != 'true' && hashFiles('automation/state.json') != ''
         uses: actions/cache/save@v4
         with:
           path: automation/state.json
