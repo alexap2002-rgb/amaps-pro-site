@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only monitor of PUBLIC manufacturing RFQs; never logs in or sends messages."""
 import datetime as dt
+from collections import Counter
 import json
 import os
 import re
@@ -144,6 +145,15 @@ def rfq_details(url, html, now, title=''):
     negative = any(b in lowered for b in NEGATIVE)
     demand = bool(re.search(r'изготовлен|требуется|закупк|запрос\s+кп|ищем\s+подрядчика|заказ\s+на', lowered))
     scoped = 'Описание заказа' in plain
+    reasons = []
+    if not scoped: reasons.append('order_scope_unrecognized')
+    if not deadline_dates: reasons.append('deadline_unrecognized')
+    elif min(deadline_dates) < now: reasons.append('deadline_expired')
+    if closed: reasons.append('closed')
+    if not (material or edm): reasons.append('material_or_edm_missing')
+    if not demand: reasons.append('demand_missing')
+    if hidden: reasons.append('contact_hidden')
+    if negative: reasons.append('negative_process_or_material')
     # Conservative preliminary filter, never automatic qualification.
     eligible = recent and (material or edm) and demand and not hidden and not negative and scoped
     status = ('НЕ ПРИНЯТА — сведения заказчика скрыты; прямой контакт не установлен'
@@ -152,16 +162,27 @@ def rfq_details(url, html, now, title=''):
             'aluminum_or_edm_in_order_description': material or edm,
             'recent_date_detected': recent, 'dates_on_page': sorted(set(str(d) for d in dates))[:10],
             'buyer_contact_hidden': hidden, 'buyer_and_live_need_confirmed': False,
-            'eligible_preliminary': eligible, 'deadline_dates': [str(d) for d in deadline_dates],
+            'eligible_preliminary': eligible, 'rejection_reasons': reasons, 'deadline_dates': [str(d) for d in deadline_dates],
             'negative_material_or_process': negative, 'explicit_order_scope': scoped,
             'status': status, 'extract': scope[:550]}
 
 def run():
     now = dt.datetime.now(dt.timezone.utc).date()
     known = set()
+    history = {}
     if STATE.exists():
-        try: known = set(json.loads(STATE.read_text(encoding='utf-8')).get('seen_urls', []))
-        except Exception: pass
+        try:
+            saved = json.loads(STATE.read_text(encoding='utf-8'))
+            known = set(saved.get('seen_urls', []))
+            history = saved.get('checked_urls', {})
+            if not isinstance(history, dict):
+                history = {}
+        except (OSError, ValueError, TypeError):
+            pass
+    scan_epoch = time.time()
+    rejection_counts = Counter()
+    source_stats = {}
+    skipped_recent = 0
     robots_cache = {}
     indexes_opened = 0
     seen_in_run = set()
@@ -169,33 +190,59 @@ def run():
     successful_details = 0
     rejected = 0
     for key, base, path_pattern in SOURCES:
+        stats = source_stats[key] = {'index_opened': False, 'links_found': 0, 'due_links': 0, 'checked': 0, 'rejected': 0, 'errors': 0, 'skipped_recent': 0}
         try:
             if not robots_allowed(base, robots_cache):
+                stats['errors'] += 1
                 errors.append({'source': key, 'error': 'robots.txt: prohibited or unavailable'}); continue
             html = get(base)
             indexes_opened += 1
+            stats['index_opened'] = True
             urls = find_links(html, base, path_pattern)
-            urls.sort(key=lambda item: sum(k in item[1].lower() for k in ('алюмини', 'д16т', 'амг', 'корпус', 'крышк', 'детал', 'фрезер', 'электроэроз')), reverse=True)
-            for url, title in urls[:8]:
+            stats['links_found'] = len(urls)
+            due = []
+            for url, title in urls:
+                identity = canonical_url(url)
+                previous = history.get(identity, {})
+                if identity in seen_in_run:
+                    continue
+                if previous.get('title') == title and scan_epoch - previous.get('checked_at', 0) < 72 * 3600:
+                    stats['skipped_recent'] += 1
+                    skipped_recent += 1
+                    continue
+                due.append((url, title))
+            stats['due_links'] = len(due)
+            # Unseen and changed listings before old rechecks; rotate through the entire index.
+            due.sort(key=lambda item: (
+                canonical_url(item[0]) in history,
+                history.get(canonical_url(item[0]), {}).get('checked_at', 0),
+                -sum(k in item[1].lower() for k in ('алюмини', 'д16т', 'амг', 'корпус', 'крышк', 'детал', 'фрезер', 'электроэроз'))))
+            for url, title in due[:8]:
                 identity = canonical_url(url)
                 if identity in seen_in_run:
                     continue
                 seen_in_run.add(identity)
                 if not robots_allowed(url, robots_cache): continue
                 checked += 1
+                stats['checked'] += 1
                 try:
                     result = rfq_details(url, get(url), now, title)
                     successful_details += 1
+                    history[identity] = {'checked_at': scan_epoch, 'title': title, 'eligible': result['eligible_preliminary']}
                     if result['eligible_preliminary']:
                         result['new_since_previous_run'] = identity not in known
                         results.append(result)
                         known.add(identity)
                     else:
                         rejected += 1
+                        stats['rejected'] += 1
+                        rejection_counts.update(result['rejection_reasons'])
                 except Exception as exc:
+                    stats['errors'] += 1
                     errors.append({'source': key, 'url': url, 'error': type(exc).__name__ + ': ' + str(exc)[:130]})
                 time.sleep(1.2)
         except Exception as exc:
+            stats['errors'] += 1
             errors.append({'source': key, 'error': type(exc).__name__ + ': ' + str(exc)[:130]})
     results.sort(key=lambda x:(x.get('new_since_previous_run', False), x['relevance']), reverse=True)
     report = {'time_utc': dt.datetime.now(dt.timezone.utc).isoformat(), 'mode': 'public-read-only',
@@ -203,10 +250,14 @@ def run():
               'new_preliminary_signals': sum(bool(r.get('new_since_previous_run')) for r in results),
               'confirmed_qualified_orders': 0, 'messages_sent': 0,
               'successful_details': successful_details, 'rejected_details': rejected,
-              'scan_healthy': indexes_opened > 0 and successful_details > 0,
+              'scan_healthy': indexes_opened > 0 and (successful_details > 0 or (skipped_recent > 0 and checked == 0)),
+              'coverage_complete': indexes_opened == len(SOURCES) and not errors,
+              'skipped_recent': skipped_recent, 'rejection_counts': dict(rejection_counts),
+              'source_stats': source_stats,
               'items': results[:20], 'errors': errors}
     OUTPUT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-    STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:]}, ensure_ascii=False, indent=2), encoding='utf-8')
+    history = dict(sorted(history.items(), key=lambda item: item[1].get('checked_at', 0), reverse=True)[:5000])
+    STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:], 'checked_urls': history}, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({'configured': len(SOURCES), 'indexes_opened': indexes_opened, 'details': checked, 'preliminary': report['new_preliminary_signals'],
                       'qualified': 0, 'errors': len(errors)}, ensure_ascii=False))
     # Machine-readable fallback for read-only consumers without ZIP extraction.
@@ -215,7 +266,7 @@ def run():
         'time_utc', 'sources_configured', 'indexes_opened',
         'detail_pages_checked', 'successful_details', 'rejected_details',
         'new_preliminary_signals', 'confirmed_qualified_orders',
-        'messages_sent', 'scan_healthy')}
+        'messages_sent', 'scan_healthy', 'coverage_complete', 'skipped_recent', 'rejection_counts', 'source_stats')}
     log_report['items'] = [{k: row.get(k) for k in (
         'url', 'relevance', 'deadline_dates', 'new_since_previous_run',
         'eligible_preliminary', 'buyer_and_live_need_confirmed')} for row in report['items']]
@@ -231,5 +282,18 @@ def run():
                 s.write('- ' + row['title'].replace('\n',' ')[:100] + ': ' + row['url'] + '\n')
     return 0 if report['scan_healthy'] else 2
 
+def self_test():
+    now = dt.date(2026, 11, 25)
+    base = '<p>Описание заказа</p><p>Требуется изготовление корпуса Д16Т</p><p>Контакты заказчика</p><p>Окончание приема заявок: 30.11.2026</p>'
+    url = 'https://example.org/orders/1'
+    assert rfq_details(url, base, now)['eligible_preliminary']
+    assert 'deadline_expired' in rfq_details(url, base.replace('30.11.2026', '20.11.2026'), now)['rejection_reasons']
+    assert 'contact_hidden' in rfq_details(url, base + ' контакты заказчика скрыты', now)['rejection_reasons']
+    assert 'order_scope_unrecognized' in rfq_details(url, base.replace('Описание заказа', 'Меню'), now)['rejection_reasons']
+    assert 'material_or_edm_missing' in rfq_details(url, base.replace('Д16Т', 'пластик'), now)['rejection_reasons']
+    assert not rfq_details(url, base + ' закупка завершена', now)['eligible_preliminary']
+    print('AMAPS_SELFTEST_OK 6', flush=True)
+
 if __name__ == '__main__':
+    self_test()
     sys.exit(run())
