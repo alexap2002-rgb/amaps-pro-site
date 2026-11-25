@@ -213,6 +213,7 @@ def run():
     seen_in_run = set()
     run_deadline = time.monotonic() + 480
     errors, results, checked = [], [], 0
+    review_queue = []
     successful_details = 0
     rejected = 0
     for key, base, path_pattern in SOURCES:
@@ -273,6 +274,12 @@ def run():
                         results.append(result)
                         known.add(identity)
                     else:
+                        # Unrecognized structure is not evidence of irrelevance.
+                        gaps = set(result['rejection_reasons'])
+                        hard = {'closed', 'deadline_expired', 'restricted_end_use', 'supplier_ad'}
+                        if gaps.intersection({'order_scope_unrecognized', 'deadline_unrecognized', 'deadline_today_time_unverified', 'ambiguous_order_page'}) and not gaps.intersection(hard):
+                            if result['aluminum_or_edm_in_order_description'] or any(t in title.lower() for t in POSITIVE):
+                                review_queue.append({'url': identity, 'reasons': sorted(gaps), 'evidence_sha256': result['evidence_sha256'], 'status': 'НЕ ПРИНЯТА — требуется проверка первоисточника'})
                         rejected += 1
                         stats['rejected'] += 1
                         rejection_counts.update(result['rejection_reasons'])
@@ -298,7 +305,9 @@ def run():
               'coverage_complete': all(s['coverage'] == 'Индекс и доступная очередь проверены' for s in source_stats.values()),
               'skipped_recent': skipped_recent, 'rejection_counts': dict(rejection_counts),
               'source_stats': source_stats,
-              'items': results, 'errors': errors}
+              'items': results, 'errors': errors,
+              'manual_review_queue': review_queue, 'manual_review_count': len(review_queue),
+              'fallback_required': [{'source': key, 'index': base, 'domain': urllib.parse.urlparse(base).hostname, 'status': 'Н/Д — требуется адресная проверка разрешённым способом'} for key, base, _ in SOURCES if not source_stats[key]['index_opened']]}
     tmp = OUTPUT.with_suffix('.tmp')
     tmp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     tmp.replace(OUTPUT)
@@ -318,6 +327,9 @@ def run():
     log_report['items'] = [{k: row.get(k) for k in (
         'url', 'relevance', 'deadline_dates', 'new_since_previous_run',
         'eligible_preliminary', 'buyer_and_live_need_confirmed')} for row in report['items']]
+    log_report['manual_review_count'] = report['manual_review_count']
+    log_report['manual_review_queue'] = review_queue
+    log_report['fallback_required'] = report['fallback_required']
     log_report['errors'] = [{'source': e.get('source'), 'error': e.get('error', '').split(':', 1)[0]} for e in errors]
     print('AMAPS_REPORT_V1 ' + json.dumps(log_report, ensure_ascii=False, separators=(',', ':')), flush=True)
     if os.getenv('GITHUB_STEP_SUMMARY'):
