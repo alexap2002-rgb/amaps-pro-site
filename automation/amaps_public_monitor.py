@@ -211,6 +211,7 @@ def run():
     robots_cache = {}
     indexes_opened = 0
     seen_in_run = set()
+    run_deadline = time.monotonic() + 480
     errors, results, checked = [], [], 0
     successful_details = 0
     rejected = 0
@@ -237,7 +238,7 @@ def run():
                 previous = history.get(identity, {})
                 if identity in seen_in_run:
                     continue
-                if previous.get('title') == title and scan_epoch - previous.get('checked_at', 0) < 72 * 3600:
+                if previous.get('title') == title and previous.get('evidence_sha256') and scan_epoch - previous.get('checked_at', 0) < (7200 if previous.get('eligible') else 86400):
                     stats['skipped_recent'] += 1
                     skipped_recent += 1
                     continue
@@ -246,9 +247,13 @@ def run():
             # Unseen and changed listings before old rechecks; rotate through the entire index.
             due.sort(key=lambda item: (
                 canonical_url(item[0]) in history,
-                history.get(canonical_url(item[0]), {}).get('checked_at', 0),
-                -sum(k in item[1].lower() for k in ('алюмини', 'д16т', 'амг', 'корпус', 'крышк', 'детал', 'фрезер', 'электроэроз'))))
-            for url, title in due[:8]:
+                -sum(k in item[1].lower() for k in ('алюмини', 'д16т', 'амг', 'корпус', 'крышк', 'детал', 'фрезер', 'электроэроз')),
+                history.get(canonical_url(item[0]), {}).get('checked_at', 0)))
+            for url, title in due[:16]:
+                if time.monotonic() >= run_deadline:
+                    stats['errors'] += 1
+                    errors.append({'source': key, 'error': 'Исчерпан лимит времени цикла'})
+                    break
                 identity = canonical_url(url)
                 if identity in seen_in_run:
                     continue
@@ -293,12 +298,14 @@ def run():
               'coverage_complete': all(s['coverage'] == 'Индекс и доступная очередь проверены' for s in source_stats.values()),
               'skipped_recent': skipped_recent, 'rejection_counts': dict(rejection_counts),
               'source_stats': source_stats,
-              'items': results[:20], 'errors': errors}
+              'items': results, 'errors': errors}
     tmp = OUTPUT.with_suffix('.tmp')
     tmp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     tmp.replace(OUTPUT)
-    history = dict(sorted(history.items(), key=lambda item: item[1].get('checked_at', 0), reverse=True)[:5000])
-    STATE.write_text(json.dumps({'seen_urls': sorted(known)[-2500:], 'checked_urls': history, 'parser_revision': 3}, ensure_ascii=False, indent=2), encoding='utf-8')
+    history = dict(sorted(history.items(), key=lambda item: item[1].get('checked_at', 0), reverse=True))
+    state_tmp = STATE.with_suffix('.tmp')
+    state_tmp.write_text(json.dumps({'seen_urls': sorted(known), 'checked_urls': history, 'parser_revision': 3}, ensure_ascii=False, indent=2), encoding='utf-8')
+    state_tmp.replace(STATE)
     print(json.dumps({'configured': len(SOURCES), 'indexes_opened': indexes_opened, 'details': checked, 'preliminary': report['new_preliminary_signals'],
                       'qualified': 0, 'errors': len(errors)}, ensure_ascii=False))
     # Machine-readable fallback for read-only consumers without ZIP extraction.
