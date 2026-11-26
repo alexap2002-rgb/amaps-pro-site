@@ -1,4 +1,9 @@
 {
   "version": 1,
-  "task": null
+  "task": {
+    "id": "architecture-profit-audit",
+    "kind": "monitor-fix",
+    "base": "db159b6cd4bbd06b4597833764831cf3f8696f7f",
+    "sha": "c36cc9c1794c209061c85b84768b2f1877fb8c06"
+  }
 }
