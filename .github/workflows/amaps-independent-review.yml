@@ -1,0 +1,40 @@
+name: Независимые испытания результатов Codex
+on:
+  push:
+    branches: ['amaps/verify-codex-20261126']
+    paths: ['.github/workflows/amaps-independent-review.yml']
+permissions:
+  contents: read
+jobs:
+  offline:
+    name: ${{ matrix.os }} — ${{ matrix.result }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        result: [reliability, moscow-time]
+        include:
+          - result: reliability
+            revision: 6023cf3eb58cdf43170533e02cabdb3159e92f15
+          - result: moscow-time
+            revision: ec9d50ba1e6cb0d9c786924c9d42994642c7a131
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      PYTHONOPTIMIZE: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Получить точную редакцию результата
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.revision }}
+          persist-credentials: false
+      - name: Проверить редакцию и версию Python
+        run: |
+          git rev-parse HEAD
+          python --version
+      - name: Встроенные проверки
+        run: python -B automation/amaps_public_monitor.py --self-test
+      - name: Независимый запуск дополнительных проверок
+        run: python -B -m unittest discover -s automation -p test_amaps_public_monitor.py -v
