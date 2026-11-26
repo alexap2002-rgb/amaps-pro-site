@@ -1,0 +1,13 @@
+{
+  "задание": "commercial-monitor-audit",
+  "основание": "59d9ab54f72350866fea4970416dc24302446dfd",
+  "хэш_задания": "253d9c1ee2925d47ba2ffbee4e2468c866a31d6e",
+  "код_завершения_Codex": 0,
+  "файлы": [
+    "automation/amaps_public_monitor.py",
+    "automation/test_amaps_public_monitor.py"
+  ],
+  "проверка_diff": "пройдена",
+  "испытания": "требуется независимая проверка",
+  "статус": "результат для проверки, не развёрнут"
+}
