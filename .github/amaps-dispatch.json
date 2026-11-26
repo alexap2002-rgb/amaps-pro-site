@@ -1,9 +1,4 @@
 {
   "version": 1,
-  "task": {
-    "id": "monitor-merge-review",
-    "kind": "monitor-fix",
-    "base": "59d9ab54f72350866fea4970416dc24302446dfd",
-    "sha": "1be5bb1daf9640fe168e3088b33ecde805abb48c"
-  }
+  "task": null
 }
