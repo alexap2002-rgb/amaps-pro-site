@@ -1,4 +1,9 @@
 {
   "version": 1,
-  "task": null
+  "task": {
+    "id": "windows-moscow-time",
+    "kind": "monitor-fix",
+    "base": "59d9ab54f72350866fea4970416dc24302446dfd",
+    "sha": "461353cff60e8d0ee4de892290f64a63eeff2208"
+  }
 }
