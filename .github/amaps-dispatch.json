@@ -1,4 +1,9 @@
 {
   "version": 1,
-  "task": null
+  "task": {
+    "id": "source-format-acceptance",
+    "kind": "monitor-fix",
+    "base": "59d9ab54f72350866fea4970416dc24302446dfd",
+    "sha": "0d9a4a1ded9b44ceded8d26cdd59f58d321b90c1"
+  }
 }
