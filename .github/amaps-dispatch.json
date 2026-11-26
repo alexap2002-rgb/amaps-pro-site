@@ -1,9 +1,4 @@
 {
   "version": 1,
-  "task": {
-    "id": "structured-source-recovery",
-    "kind": "monitor-fix",
-    "base": "db159b6cd4bbd06b4597833764831cf3f8696f7f",
-    "sha": "e15e0b5748960a5d1646551dd2c62b3afd969cd5"
-  }
+  "task": null
 }
