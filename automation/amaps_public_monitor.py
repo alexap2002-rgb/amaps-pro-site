@@ -2,7 +2,7 @@
 """Read-only monitor of PUBLIC manufacturing RFQs; never logs in or sends messages."""
 import datetime as dt
 import hashlib
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from collections import Counter
 import json
 import os
@@ -191,8 +191,20 @@ def rfq_details(url, html, now, title=''):
             'evidence_sha256': hashlib.sha256(html.encode('utf-8')).hexdigest(),
             'observed_utc': dt.datetime.now(dt.timezone.utc).isoformat()}
 
+def moscow_today() -> dt.date:
+    """Return today's Moscow date, with a UTC+03:00 fallback for current dates only.
+
+    The fixed offset is unsuitable for historical date calculations.
+    """
+    try:
+        moscow = ZoneInfo('Europe/Moscow')
+    except ZoneInfoNotFoundError:
+        moscow = dt.timezone(dt.timedelta(hours=3))
+    return dt.datetime.now(moscow).date()
+
+
 def run():
-    now = dt.datetime.now(ZoneInfo('Europe/Moscow')).date()
+    now = moscow_today()
     known = set()
     history = {}
     if STATE.exists():
