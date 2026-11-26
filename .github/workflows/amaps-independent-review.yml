@@ -12,12 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        result: [reliability, moscow-time]
+        result: [combined]
         include:
-          - result: reliability
-            revision: 6023cf3eb58cdf43170533e02cabdb3159e92f15
-          - result: moscow-time
-            revision: ec9d50ba1e6cb0d9c786924c9d42994642c7a131
+          - result: combined
+            revision: a93f3c88e0f7142d418f87ba00cdb8fcfe09c64e
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     env:
