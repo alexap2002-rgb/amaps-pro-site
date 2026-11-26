@@ -12,10 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        result: [index-selflink]
+        result: [structured-recovery]
         include:
-          - result: index-selflink
-            revision: aacce0182396a39e8c845dc797453b13e198f021
+          - result: structured-recovery
+            revision: 0be543e4b851893c99b00601b374640cf4d373ce
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     env:
