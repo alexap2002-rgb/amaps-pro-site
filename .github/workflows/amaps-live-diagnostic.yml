@@ -1,0 +1,45 @@
+name: Однократная диагностика источников АМАПС
+on:
+  push:
+    branches: ['amaps/verify-codex-20261126']
+    paths: ['.github/workflows/amaps-live-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: a93f3c88e0f7142d418f87ba00cdb8fcfe09c64e
+          persist-credentials: false
+      - name: Встроенные испытания
+        run: python3 -B automation/amaps_public_monitor.py --self-test
+      - name: Однократная проверка с обезличенным итогом
+        shell: bash
+        run: |
+          unset GITHUB_STEP_SUMMARY
+          set +e
+          python3 -B automation/amaps_public_monitor.py > "$RUNNER_TEMP/amaps-live-private.log" 2>&1
+          code=$?
+          set -e
+          export AMAPS_SCAN_EXIT="$code"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('automation/report.json')
+          if not p.is_file():
+              raise SystemExit('Отчёт не сформирован; исходный журнал не публикуется')
+          r = json.loads(p.read_text(encoding='utf-8'))
+          keys = ('index_opened','links_found','checked','remaining_queue','detail_errors','unknown_details','coverage_gaps','first_observed_urls')
+          summary = {k:r.get(k) for k in ('time_utc','sources_configured','indexes_opened','detail_pages_checked','successful_details','rejected_details','new_preliminary_signals','coverage_complete','history_status','manual_review_count')}
+          summary['scan_exit'] = int(os.environ['AMAPS_SCAN_EXIT'])
+          summary['sources'] = {k:{field:v.get(field) for field in keys} for k,v in r['source_stats'].items()}
+          print('AMAPS_LIVE_DIAGNOSTIC_V1 ' + json.dumps(summary, ensure_ascii=False))
+          if summary['scan_exit'] not in (0, 2):
+              raise SystemExit('Непредусмотренный код завершения')
+          PY
+      - name: Удаление временных материалов
+        if: always()
+        run: rm -f automation/report.json automation/state.json "$RUNNER_TEMP/amaps-live-private.log"
