@@ -1,0 +1,28 @@
+name: Техническое задание для Codex
+description: Публичное задание АМАПС с критериями приёмки
+title: "[ТЗ] "
+body:
+  - type: markdown
+    attributes:
+      value: Репозиторий публичный. Включайте только сведения, которые можно опубликовать.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Ожидаемый результат
+      description: Что должно измениться и зачем.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Объём и ограничения
+      description: Укажите разрешённую область работы, исходные материалы и ограничения.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Критерии приёмки
+      description: Перечислите наблюдаемые результаты и необходимые испытания.
+    validations:
+      required: true

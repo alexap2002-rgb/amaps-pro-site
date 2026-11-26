@@ -1,0 +1,31 @@
+name: Проверки проекта АМАПС
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['codex/amaps-*']
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Проверки без внешних сервисов
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Получение файлов репозитория
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Тесты загрузки задачи
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s automation -p test_amaps_task.py
+      - name: Самопроверка мониторинга
+        run: PYTHONOPTIMIZE=0 python3 automation/amaps_public_monitor.py --self-test
+      - name: Проверка синтаксиса обработчиков заявок
+        run: |
+          node --check api/lead.js
+          node --check cloudflare-worker.js
+      - name: Локальная HTTP-проверка сайта
+        run: python3 automation/check_amaps_site.py
