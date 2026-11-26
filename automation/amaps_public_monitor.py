@@ -191,6 +191,9 @@ def find_links(html, base, pattern):
         if p.scheme != 'https' or p.netloc != base_host or not re.fullmatch(pattern, p.path, flags=re.I):
             continue
         u = p._replace(query='', fragment='').geturl()
+        # Сам каталог и его варианты с параметрами не являются карточками.
+        if p.path.rstrip('/') == urllib.parse.urlparse(base).path.rstrip('/'):
+            continue
         if u not in found:
             found[u] = link['text'].strip()[:180]
     return list(found.items())
@@ -445,6 +448,16 @@ def run(now=None):
         report['replayed_report'] = True
         publish_report(report, make_state(known, history, baselines, pending, metadata))
         return 2  # A historical report cannot mark the current hour as scanned.
+    # Удаляем только ошибочные записи самих каталогов из старого состояния.
+    index_paths = {canonical_url(source[1]).rstrip('/') for source in SOURCES}
+    def is_index(identity):
+        return canonical_url(identity).rstrip('/') in index_paths
+    known = {url for url in known if not is_index(url)}
+    history = {url: row for url, row in history.items() if not is_index(url)}
+    pending = {url: row for url, row in pending.items() if not is_index(url)}
+    if 'first_seen' in metadata:
+        metadata['first_seen'] = {url: value for url, value in metadata['first_seen'].items()
+                                  if not is_index(url)}
     coverage_epochs = metadata.get('coverage_epochs', {})
     index_epochs = metadata.get('index_epochs', {})
     first_seen = metadata.get('first_seen', {})
