@@ -301,6 +301,34 @@ class CycleTests(unittest.TestCase):
         self.assertIsNone(report['new_preliminary_signals'])
         self.assertNotIn('https://unavailable.example/orders', [call.args[0] for call in self.fetch.call_args_list])
 
+    def test_catalog_self_links_do_not_become_orders(self):
+        pattern = r'^/orders/[^#?]*$'
+        html = index(BASE + '/', BASE + '/?page=2', CARD)
+        self.assertEqual([url for url, _ in monitor.find_links(html, BASE + '/', pattern)], [CARD])
+
+    def test_old_catalog_entry_is_removed_without_losing_real_cards(self):
+        catalog = BASE + '/'
+        self.sources[:] = [('synthetic', catalog, r'^/orders/[^#?]*$')]
+        self.pages[catalog] = index(catalog, CARD)
+        self.cycle()
+        saved = json.loads(self.state.read_text(encoding='utf-8'))
+        saved['seen_urls'].append(catalog)
+        saved['checked_urls'][catalog] = dict(saved['checked_urls'][CARD],
+                                              review_reasons=['order_scope_unrecognized'],
+                                              format_gap=True)
+        saved['pending_urls'][catalog] = ['synthetic', 0, None, False]
+        saved['first_seen'][catalog] = 100000
+        self.state.write_text(json.dumps(saved), encoding='utf-8')
+        self.fetch.reset_mock()
+        report = self.cycle()
+        self.assertEqual(report['source_stats']['synthetic']['links_found'], 1)
+        self.assertEqual(report['manual_review_queue'], [])
+        self.fetch.assert_called_once_with(catalog)
+        restored = json.loads(self.state.read_text(encoding='utf-8'))
+        self.assertIn(CARD, restored['checked_urls'])
+        for key in ('seen_urls', 'checked_urls', 'pending_urls', 'first_seen'):
+            self.assertNotIn(catalog, restored[key])
+
     def test_unknown_index(self):
         self.pages[BASE] = '<p>Неизвестный формат списка</p>'
         report = self.cycle(2)
