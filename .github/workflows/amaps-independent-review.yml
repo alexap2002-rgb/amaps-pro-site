@@ -12,10 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        result: [combined]
+        result: [commercial-audit]
         include:
-          - result: combined
-            revision: a93f3c88e0f7142d418f87ba00cdb8fcfe09c64e
+          - result: commercial-audit
+            revision: 79fb4bcacbcbb12471fc0b14d6484d52e66e8f0e
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     env:
