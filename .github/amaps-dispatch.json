@@ -1,9 +1,9 @@
 {
   "version": 1,
   "task": {
-    "id": "architecture-profit-audit",
+    "id": "architecture-profit-audit-retry",
     "kind": "monitor-fix",
     "base": "db159b6cd4bbd06b4597833764831cf3f8696f7f",
-    "sha": "c36cc9c1794c209061c85b84768b2f1877fb8c06"
+    "sha": "fbee5be1ad849c74c022ce79b0b1867e29fa1890"
   }
 }
