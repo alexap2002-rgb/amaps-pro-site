@@ -1,0 +1,210 @@
+import contextlib
+import datetime as dt
+import io
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import MagicMock, patch
+
+import amaps_public_monitor as monitor
+
+
+BASE = 'https://synthetic.example/orders'
+CARD = BASE + '/1'
+PATTERN = r'^/orders/\d+$'
+DESCRIPTION = '<p>Описание заказа</p><p>Требуется изготовление корпуса Д16Т</p>'
+LABEL = '<p>Окончание приёма заявок: '
+
+
+def card(deadline='30 ноября 2099'):
+    return DESCRIPTION + LABEL + deadline + '</p>'
+
+
+def index(*urls):
+    return ''.join(f'<a href="{url}">Синтетическая карточка</a>' for url in urls)
+
+
+class CardTests(unittest.TestCase):
+    def parse(self, html):
+        return monitor.rfq_details(CARD, html, dt.date(2026, 11, 25))
+
+    def test_explicit_dates_and_unrelated_dates(self):
+        for date in ('30 ноября 2026', '30.11.2026', '2026-11-30'):
+            with self.subTest(date=date):
+                result = self.parse('<p>Опубликовано 20.11.2026</p>' + card(date))
+                self.assertTrue(result['eligible_preliminary'])
+                self.assertFalse(result['buyer_and_live_need_confirmed'])
+                self.assertEqual(result['deadline_dates'], ['2026-11-30'])
+        self.assertFalse(self.parse(DESCRIPTION + '<p>Дата публикации: 30.11.2026</p>')['eligible_preliminary'])
+        for date in ('20 ноября 2026', '25 ноября 2026', '31 ноября 2026', '30.11',
+                     'уточняется, опубликовано 30.11.2026'):
+            with self.subTest(date=date):
+                self.assertFalse(self.parse(card(date))['eligible_preliminary'])
+
+    def test_conflicting_labels_and_ambiguous_cards(self):
+        original = card('30.11.2026')
+        for html in (original + LABEL + '01.12.2026</p>', original + LABEL + 'уточняется</p>',
+                     card('30.11.2026 или 01.12.2026'), original + DESCRIPTION):
+            with self.subTest(html=html):
+                self.assertFalse(self.parse(html)['eligible_preliminary'])
+        self.assertTrue(self.parse(original + LABEL + '30 ноября 2026</p>')['eligible_preliminary'])
+
+    def test_description_boundary_closure_and_restricted_use(self):
+        html = '<p>Описание заказа</p><p>Статус: открыт</p><p>Требуется корпус Д16Т</p>' + LABEL + '30.11.2026</p>'
+        self.assertFalse(self.parse(html)['eligible_preliminary'])
+        self.assertFalse(self.parse(DESCRIPTION + '<p>Похожие заказы</p>' + LABEL + '30.11.2026</p>')['eligible_preliminary'])
+        self.assertIn('closed', self.parse(card() + '<p>Заказ отменён</p>')['rejection_reasons'])
+        self.assertIn('restricted_end_use', self.parse(card() + '<p>Применение двойного назначения</p>')['rejection_reasons'])
+
+
+class AccessTests(unittest.TestCase):
+    def test_robots_rules_and_failed_fetch(self):
+        with patch.object(monitor.urllib.request, 'build_opener') as build:
+            opener = build.return_value
+            response = opener.open.return_value.__enter__.return_value
+            response.status = 200
+            response.read.return_value = b'User-agent: *\nDisallow: /orders/1\n'
+            cache = {}
+            self.assertTrue(monitor.robots_allowed(BASE, cache))
+            self.assertFalse(monitor.robots_allowed(CARD, cache))
+            opener.open.assert_called_once()
+            self.assertEqual(opener.open.call_args.args[0].full_url, 'https://synthetic.example/robots.txt')
+            opener.open.side_effect = OSError('offline')
+            self.assertFalse(monitor.robots_allowed(BASE, {}))
+
+    def test_redirect_is_not_followed(self):
+        self.assertIsNone(monitor.NoRedirect().redirect_request(
+            MagicMock(), None, 302, 'Found', {}, 'https://other.example/orders/1',
+        ))
+
+
+class CycleTests(unittest.TestCase):
+    def setUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.state = Path(directory) / 'state.json'
+        self.output = Path(directory) / 'report.json'
+        self.pages = {BASE: index(CARD), CARD: card()}
+        self.sources = [('synthetic', BASE, PATTERN)]
+        self.fetch = self.enterContext(patch.object(monitor, 'get', side_effect=self.pages.__getitem__))
+        self.robots = self.enterContext(patch.object(monitor, 'robots_allowed', return_value=True))
+        self.enterContext(patch.object(monitor.urllib.request, 'build_opener', side_effect=AssertionError('Network')))
+        self.enterContext(patch.object(monitor, 'STATE', self.state))
+        self.enterContext(patch.object(monitor, 'OUTPUT', self.output))
+        self.enterContext(patch.object(monitor, 'SOURCES', self.sources))
+        self.enterContext(patch.object(monitor.time, 'sleep'))
+        self.epoch = self.enterContext(patch.object(monitor.time, 'time', return_value=100_000))
+        self.enterContext(patch.dict(os.environ, GITHUB_STEP_SUMMARY=''))
+
+    def cycle(self, expected_code=0):
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(monitor.run(now=dt.date(2026, 11, 25)), expected_code)
+        report = json.loads(self.output.read_text(encoding='utf-8'))
+        line = next(line for line in stdout.getvalue().splitlines() if line.startswith('AMAPS_REPORT_V1 '))
+        log = json.loads(line.split(' ', 1)[1])
+        for key in ('manual_review_queue', 'fallback_required', 'history_status', 'changed_cards'):
+            self.assertEqual(log[key], report[key])
+        return report
+
+    def test_changes_closure_and_reactivation_at_same_url(self):
+        self.assertFalse(self.cycle()['items'][0]['new_since_previous_run'])
+        self.epoch.return_value += 100_000
+        self.pages[CARD] = card().replace('корпуса', 'крышки')
+        updated = self.cycle()['items'][0]
+        self.assertTrue(updated['details_changed'])
+        self.assertFalse(updated['new_since_previous_run'])
+        self.epoch.return_value += 100_000
+        self.pages[CARD] += '<p>Заказ закрыт</p>'
+        closed = self.cycle()
+        self.assertEqual(closed['items'], [])
+        self.assertFalse(closed['changed_cards'][0]['eligible_preliminary'])
+        self.epoch.return_value += 100_000
+        self.pages[CARD] = card()
+        reopened = self.cycle()['items'][0]
+        self.assertTrue(reopened['reactivated'])
+        self.assertFalse(reopened['new_since_previous_run'])
+
+    def test_mirror_deduplicated(self):
+        for scheme_host in ('https://metalloobrabotchiki.ru', 'https://msk.metalloobrabotchiki.ru'):
+            url = scheme_host + '/orders'
+            self.sources.append((scheme_host, url, PATTERN))
+            self.pages[url] = index(url + '/7', url + '/7?trace=1')
+            self.pages[url + '/7'] = '<p>Заказ №7</p>' + card()
+        self.sources.pop(0)
+        report = self.cycle()
+        self.assertEqual(len(report['items']), 1)
+        self.assertEqual(report['successful_details'], 1)
+        self.assertEqual(report['fallback_required'], [])
+
+    def test_unavailable_source_and_detail_error_are_distinct(self):
+        self.sources.append(('unavailable', 'https://unavailable.example/orders', PATTERN))
+        self.robots.side_effect = lambda url, cache: 'unavailable' not in url
+        del self.pages[CARD]
+        report = self.cycle(2)
+        self.assertEqual({entry['source']: entry['reasons'] for entry in report['fallback_required']},
+                         {'unavailable': ['source_unavailable'], 'synthetic': ['detail_error']})
+        self.assertIsNone(report['new_preliminary_signals'])
+        self.assertNotIn('https://unavailable.example/orders', [call.args[0] for call in self.fetch.call_args_list])
+
+    def test_unknown_index(self):
+        self.pages[BASE] = '<p>Неизвестный формат списка</p>'
+        report = self.cycle(2)
+        self.assertEqual(report['fallback_required'][0]['reasons'], ['unknown_index_format'])
+        self.assertIsNone(report['source_stats']['synthetic']['new_publications'])
+
+    def test_queue_limit_then_next_cycle(self):
+        urls = [f'{BASE}/{number}' for number in range(1, 18)]
+        self.pages[BASE] = index(*urls)
+        self.pages.update(dict.fromkeys(urls, card()))
+        stats = self.cycle(2)['source_stats']['synthetic']
+        self.assertEqual(stats['remaining_queue'], 1)
+        self.assertEqual(stats['coverage_gaps'], ['queue_remaining'])
+        self.assertIsNone(stats['new_publications'])
+        report = self.cycle()
+        self.assertEqual(report['detail_pages_checked'], 1)
+        self.assertFalse(report['items'][0]['new_since_previous_run'])
+
+    def test_review_queue_survives_cache_and_unavailable_index(self):
+        self.pages[CARD] = DESCRIPTION
+        first = self.cycle(2)
+        self.assertEqual(first['manual_review_count'], 1)
+        cached = self.cycle(2)
+        self.assertEqual(cached['detail_pages_checked'], 0)
+        self.assertEqual(cached['manual_review_queue'], first['manual_review_queue'])
+        original_index = self.pages.pop(BASE)
+        self.assertEqual(self.cycle(2)['manual_review_queue'], first['manual_review_queue'])
+        self.pages[BASE] = original_index
+        self.pages[CARD] = card()
+        self.epoch.return_value += 100_000
+        report = self.cycle()
+        self.assertEqual(report['manual_review_queue'], [])
+        self.assertFalse(report['items'][0]['new_since_previous_run'])
+
+    def test_invalid_state_rebuilds_without_claiming_new_signals(self):
+        for content in ('{broken', '{"parser_revision":4,"seen_urls":[],"checked_urls":{"x":null},"source_baselines":[]}'):
+            with self.subTest(content=content):
+                self.state.write_text(content, encoding='utf-8')
+                report = self.cycle()
+                self.assertEqual(report['history_status'], 'invalid')
+                self.assertIsNone(report['new_preliminary_signals'])
+                self.assertFalse(report['items'][0]['new_since_previous_run'])
+
+    def test_migration_and_new_index_observation(self):
+        self.state.write_text(json.dumps({
+            'parser_revision': 3, 'seen_urls': [], 'checked_urls': {CARD: {'title': 'legacy'}},
+        }), encoding='utf-8')
+        self.assertEqual(self.cycle()['history_status'], 'migrated')
+        saved = json.loads(self.state.read_text(encoding='utf-8'))
+        self.assertEqual(saved['parser_revision'], 4)
+        self.assertNotIn('title', saved['checked_urls'][CARD])
+        second = BASE + '/2'
+        self.pages[BASE] = index(CARD, second)
+        self.pages[second] = card()
+        report = self.cycle()
+        self.assertEqual(report['new_preliminary_signals'], 1)
+        self.assertEqual(report['source_stats']['synthetic']['new_publications'], 1)
+
+
+if __name__ == '__main__':
+    unittest.main()
