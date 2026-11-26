@@ -5,9 +5,11 @@ on:
     - cron: '9,29,49 * * * *'
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - '.github/workflows/amaps-public-monitor.yml'
       - 'automation/amaps_public_monitor.py'
+      - 'automation/test_amaps_public_monitor.py'
 permissions:
   contents: read
 concurrency:
@@ -18,7 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Compute UTC hourly slot
         id: slot
         run: echo "hour=$(date -u +%Y%m%d%H)" >> "$GITHUB_OUTPUT"
@@ -38,7 +42,9 @@ jobs:
           restore-keys: amaps-public-
       - name: Test filters before scanning
         if: steps.hourcache.outputs.cache-hit != 'true'
-        run: python3 automation/amaps_public_monitor.py --self-test
+        run: |
+          PYTHONOPTIMIZE=0 python3 -B automation/amaps_public_monitor.py --self-test
+          python3 -B -m unittest discover -s automation -p test_amaps_public_monitor.py -v
       - name: Check public RFQs without auth or mail
         if: steps.hourcache.outputs.cache-hit != 'true'
         run: python3 automation/amaps_public_monitor.py
