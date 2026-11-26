@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: a93f3c88e0f7142d418f87ba00cdb8fcfe09c64e
+          ref: 79fb4bcacbcbb12471fc0b14d6484d52e66e8f0e
           persist-credentials: false
       - name: Встроенные испытания
         run: python3 -B automation/amaps_public_monitor.py --self-test
