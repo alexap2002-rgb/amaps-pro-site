@@ -37,6 +37,7 @@ import urllib.request
 import urllib.robotparser
 from pathlib import Path
 from html.parser import HTMLParser
+from xml.etree.ElementTree import Element
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / 'report.json'
@@ -64,7 +65,7 @@ UNVERIFIED_SCOPE_LABELS = {
 PROFILE_MATERIAL = r'алюмини|\b(?:д16т|амг\d*|ад31|ад0|6061|7075)\b'
 PROFILE_EDM = r'электроэроз|проволочн\w*\s+эдм'
 DOCUMENT_PATH = re.compile(r'\.(?:pdf|zip|rar|7z|step|stp|dwg|dxf|xlsx|docx)$', re.I)
-CARD_POLICY_REVISION = 2
+CARD_POLICY_REVISION = 3
 NEGATIVE = ('сварка', 'чугун', 'сталь 20', 'сталь 45', 'пружин', 'гибка', 'отливк', 'литьё')
 UA = 'AMAPS-PublicDemandMonitor/1.0 (public pages only; no automation of messages)'
 MONTHS = dict(zip(
@@ -92,6 +93,13 @@ ENERGYBASE_INDEX_FIELDS = {
 INDEX_DATE = r'(\d{1,2}\s+(?:' + '|'.join(MONTHS) + r')\s+\d{4})'
 INDEX_TIME = r'\s+г\.,\s+(?:[01]\d|2[0-3]):[0-5]\d(?![\d:])'
 PROFILE_WORDS = ('алюмини', 'д16т', 'амг', 'ад31', 'корпус', 'крышк', 'фрезер', 'электроэроз')
+CEH_SECTIONS = ('изделие и задача', 'материал и объём', 'требования и особенности',
+                'ожидания от исполнителя в отклике')
+CEH_DATE_LABELS = {'created': r'создан', 'submission_deadline': r'при[её]м заявок до'}
+ALUMINUM_GRADE = r'(?:д16т|амг\d*|ад31|ад0|6061|7075)'
+CEH_ALUMINUM_FIELD = re.compile(
+    rf'(?:{ALUMINUM_GRADE}|(?:алюминий|алюминиевый сплав)(?:\s+{ALUMINUM_GRADE})?)')
+TOMSK_ROW_LIMIT = 20
 
 
 def parse_date(raw):
@@ -204,7 +212,174 @@ def canonical_url(url):
         return 'https://metalloobrabotchiki.ru' + p.path
     return p.scheme + '://' + p.netloc + p.path
 
+
+class StructuredPage(HTMLParser):
+    """Keep explicit element boundaries for diagnostics on the synthetic formats."""
+
+    VOID = set('area base br col embed hr img input link meta param source track wbr'.split())
+    OMIT = {'script', 'style', 'noscript', 'nav', 'footer', 'header', 'template'}
+
+    def __init__(self, html):
+        super().__init__(convert_charrefs=True)
+        self.root = Element('root')
+        self.stack = [self.root]
+        self.valid = True
+        self.feed(html)
+        self.close()
+        self.valid &= len(self.stack) == 1
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        parent = self.stack[-1]
+        node = Element(tag, attrs)
+        if tag not in self.OMIT and 'hidden' not in attrs and attrs.get('aria-hidden') != 'true':
+            parent.append(node)
+        if tag not in self.VOID:
+            self.stack.append(node)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if len(self.stack) > 1 and self.stack[-1].tag == tag:
+            self.stack.pop()
+        else:
+            self.valid = False
+
+    def handle_data(self, data):
+        node = self.stack[-1]
+        if len(node):
+            child = node[-1]
+            child.tail = (child.tail or '') + data
+        else:
+            node.text = (node.text or '') + data
+
+
+def field_text(node):
+    return ' '.join(' '.join(node.itertext()).split()).casefold()
+
+
+def ceh_sections(html):
+    page = StructuredPage(html)
+    articles = list(page.root.iter('article'))
+    if not page.valid or len(articles) != 1:
+        return None
+    article = articles[0]
+    sections = {}
+    for section in article.findall('section'):
+        headings = [node for node in section if node.tag in ('h2', 'h3')]
+        if len(headings) != 1:
+            continue
+        label = field_text(headings[0])
+        if label not in CEH_SECTIONS:
+            continue
+        if label in sections or len(list(section.iter('section'))) != 1:
+            return None
+        sections[label] = [field_text(node) for node in section.findall('p')]
+    if any(not any(sections.get(label, ())) for label in CEH_SECTIONS):
+        return None
+    materials = [match[1] for value in sections[CEH_SECTIONS[1]]
+                 if (match := re.fullmatch(r'материал\s*:\s*(.+)', value))]
+    material = materials[0] if len(materials) == 1 else ''
+    headings = ' '.join(field_text(node) for node in article.findall('h1'))
+    fields = [field_text(node) for node in article.findall('p')]
+    date_labels = [key for key, label in CEH_DATE_LABELS.items()
+                   if sum(bool(re.match(label + r'\s*:', field)) for field in fields) == 1]
+    return sections, material, len(materials) > 1, headings, date_labels
+
+
+def tomsk_catalog(page):
+    diagnostic = {
+        'status': 'Н/Д', 'sample': [], 'sample_truncated': None,
+        'manual_check': ('Открыть публичный каталог Томска, найти таблицу «Производственные заказы», '
+                         'сверить заголовки «Номер» и «Предмет» и границы строк, '
+                         'проверить наличие отдельной открытой карточки для выбранной строки.'),
+    }
+    label = r'производственные заказы\s*\(\d{4}\)'
+    tables = []
+    if page.valid:
+        for parent in page.root.iter():
+            previous = ''
+            for node in parent:
+                if node.tag == 'table' and (re.fullmatch(label, previous) or any(
+                        re.fullmatch(label, field_text(caption)) for caption in node.findall('caption'))):
+                    tables.append(node)
+                previous = field_text(node) if node.tag in ('h1', 'h2', 'h3', 'h4') else ''
+    if len(tables) != 1 or len(list(tables[0].iter('table'))) != 1:
+        return diagnostic
+    rows = (row for group in tables[0] for row in
+            ([group] if group.tag == 'tr' else group.findall('tr') if group.tag in ('thead', 'tbody') else []))
+    header = next(rows, None)
+    if header is None:
+        return diagnostic
+    columns = [field_text(cell) if cell.tag == 'th' else '' for cell in header]
+    numbers = [i for i, value in enumerate(columns) if value in ('номер', '№', 'номер заказа', '№ заказа')]
+    subjects = [i for i, value in enumerate(columns) if value in ('предмет', 'предмет заказа')]
+    if len(numbers) != 1 or len(subjects) != 1 or any(
+            'colspan' in cell.attrib or 'rowspan' in cell.attrib for cell in header):
+        return diagnostic
+    diagnostic['sample_truncated'] = False
+    for position, row in enumerate(rows, 1):
+        if position > TOMSK_ROW_LIMIT:
+            diagnostic['sample_truncated'] = True
+            break
+        if len(row) != len(columns) or any(
+                cell.tag != 'td' or 'colspan' in cell.attrib or 'rowspan' in cell.attrib for cell in row):
+            # A spanning cell can affect the interpretation of all subsequent rows.
+            diagnostic['sample_truncated'] = None
+            break
+        fields = [field_text(row[index]) for index in (numbers[0], subjects[0])]
+        if all(fields):
+            digest = hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode('utf-8')).hexdigest()
+            diagnostic['sample'].append({'row_position': position, 'fields_sha256': digest})
+    return diagnostic
+
+
+def energybase_date_pairs(page, base, path_pattern):
+    if not page.valid:
+        return None
+    block_tags = {'tr', 'article'}
+    blocks = []
+    pending = [page.root]
+    while pending:
+        node = pending.pop()
+        if node.tag in block_tags:
+            blocks.append(node)
+        else:
+            pending.extend(node)
+    candidates = []
+    occurrences = Counter()
+    host = urllib.parse.urlsplit(base).netloc
+    for block in blocks:
+        links = []
+        for link in block.iter('a'):
+            target = urllib.parse.urlsplit(urllib.parse.urljoin(base, link.get('href') or ''))
+            if (target.scheme == 'https' and target.netloc == host
+                    and re.fullmatch(path_pattern, target.path, flags=re.I)):
+                links.append((target.path, field_text(link)))
+        occurrences.update(path for path, _ in links)
+        if len(links) != 1 or not links[0][1] or any(
+                child is not block and child.tag in block_tags for child in block.iter()):
+            continue
+        # Only direct fields are eligible. In a table, each date has its own cell.
+        fields = [field_text(node) for node in block if node.tag in ('p', 'td', 'div')]
+        for label in ENERGYBASE_INDEX_FIELDS.values():
+            matching = [field for field in fields if field.startswith(label)]
+            if len(matching) != 1:
+                break
+            value = re.fullmatch(label + r'\s*:?\s*' + INDEX_DATE + INDEX_TIME, matching[0])
+            if value is None or parse_date(value[1]) is None:
+                break
+        else:
+            candidates.append(links[0][0])
+    return sum(occurrences[path] == 1 for path in candidates) or None
+
+
 def index_observations(key, html):
+    if key == 'tomsk_subcontract':
+        return {'tomsk_catalog': tomsk_catalog(StructuredPage(html))}
     if key not in ('ceh', 'energybase_parts'):
         return {}
     page = Page()
@@ -212,11 +387,14 @@ def index_observations(key, html):
     plain = re.sub(r'\s+', ' ', page.text_value().lower())
     if key == 'ceh':
         return {'dynamic_index_placeholder': bool(re.search(r'\bзагрузка\s*(?:\.{3}|…)', plain))}
-    return {
+    observations = {
         field: sum(parse_date(value) is not None for value in re.findall(
             r'\b' + label + r'\s*:?\s*' + INDEX_DATE + INDEX_TIME, plain))
         for field, label in ENERGYBASE_INDEX_FIELDS.items()
     }
+    _, base, path_pattern = next(source for source in SOURCES if source[0] == key)
+    observations['energybase_index_date_pairs'] = energybase_date_pairs(StructuredPage(html), base, path_pattern)
+    return observations
 
 
 def rfq_details(url, html, now, title=''):
@@ -233,7 +411,9 @@ def rfq_details(url, html, now, title=''):
     if related:
         plain = plain[:related.start()]
     normalized = plain.lower()
-    scope_label = UNVERIFIED_SCOPE_LABELS.get(urllib.parse.urlsplit(url).hostname)
+    host = urllib.parse.urlsplit(url).hostname
+    scope_label = UNVERIFIED_SCOPE_LABELS.get(host)
+    is_ceh = host == 'xn----7sbocllqn1abl5bl1g.xn--p1ai'
     description = DESCRIPTION if scope_label is None else rf'\b{scope_label}\b'
     descriptions = list(re.finditer(description, normalized))
     ambiguous_page = ambiguous_page or len(descriptions) > 1
@@ -242,6 +422,22 @@ def rfq_details(url, html, now, title=''):
         tail = plain[descriptions[0].end():]
         end = re.search(DESCRIPTION_END, tail, flags=re.I)
         scope = (tail[:end.start()] if end else tail).strip(' :—-')
+    structured = ceh_sections(html) if is_ceh else None
+    exact_material = ''
+    ceh_material_conflict = False
+    structured_date_labels = []
+    if is_ceh:
+        scope = ''
+        if structured:
+            sections, exact_material, ceh_material_conflict, card_title, structured_date_labels = structured
+            scope = ' '.join(sections[CEH_SECTIONS[0]] + sections[CEH_SECTIONS[2]])
+            title_text = title.casefold() + ' ' + card_title
+            title_grades = set(re.findall(rf'\b{ALUMINUM_GRADE}\b', title_text))
+            material_grades = set(re.findall(rf'\b{ALUMINUM_GRADE}\b', exact_material))
+            ceh_material_conflict |= bool(
+                exact_material and not CEH_ALUMINUM_FIELD.fullmatch(exact_material)
+                and (re.search(PROFILE_MATERIAL, title_text) or re.search(PROFILE_MATERIAL, exact_material)))
+            ceh_material_conflict |= bool(title_grades and material_grades and title_grades != material_grades)
     lowered = scope.lower()
     date_end = r'(?![\w/-]|\.\d)'
     dates = {parse_date(raw) for raw in re.findall(r'(?<![\w./-])' + DATE + date_end, normalized)}
@@ -262,7 +458,8 @@ def rfq_details(url, html, now, title=''):
         r'при[её]м (?:заявок|предложений) (?:заверш[её]н|закрыт|прекращ[её]н)|'
         r'(?:закупка|процедура) (?:завершена|отменена)|заказ (?:закрыт|отмен[её]н)|'
         r'\bзакрыт\b|договор заключ[её]н', normalized))
-    material = bool(re.search(PROFILE_MATERIAL, lowered))
+    material = bool(CEH_ALUMINUM_FIELD.fullmatch(exact_material) if is_ceh
+                    else re.search(PROFILE_MATERIAL, lowered))
     edm = bool(re.search(PROFILE_EDM, lowered))
     profile_hint = re.compile(PROFILE_MATERIAL + '|' + PROFILE_EDM, re.I)
     publication_dates = {
@@ -300,8 +497,13 @@ def rfq_details(url, html, now, title=''):
         if parsed.scheme == 'https' and parsed.netloc == urllib.parse.urlparse(url).netloc and not parsed.query and not parsed.fragment and DOCUMENT_PATH.search(parsed.path):
             attachments.append(target)
             attachment_hint |= bool(profile_hint.search(link['text'] + ' ' + urllib.parse.unquote(parsed.path)))
-    negative = any(b in lowered for b in NEGATIVE)
-    conflicting_material = material and any(word in lowered for word in ('чугун', 'сталь 20', 'сталь 45'))
+    material_context = exact_material + ' ' + lowered
+    negative = any(b in material_context for b in NEGATIVE)
+    conflicting_material = ceh_material_conflict or (
+        material and any(word in material_context for word in ('чугун', 'сталь 20', 'сталь 45')))
+    if is_ceh and conflicting_material:
+        material = False
+        relevance = 0
     demand = bool(re.search(r'изготовлен|требуется|закупк|запрос\s+кп|ищем\s+подрядчика|заказ\s+на', lowered))
     scoped = bool(scope)
     reasons = []
@@ -330,7 +532,7 @@ def rfq_details(url, html, now, title=''):
     commercial_reasons = sorted(set(reasons) - FORMAT_GAPS)
     civil_hint = bool(re.search(r'гражданск|пищев\w+ оборудован', lowered))
     process_hint = bool(re.search(r'фрезер|токар|чпу|механообработ|точени', lowered))
-    subject_review = (not eligible and not (set(reasons) & HARD_REJECTIONS)
+    subject_review = (not eligible and not (is_ceh and conflicting_material) and not (set(reasons) & HARD_REJECTIONS)
                       and not ambiguous_page and civil_hint and demand
                       and (material or edm or process_hint or profile_hint.search(title) or attachment_hint)
                       and (not negative or conflicting_material))
@@ -343,6 +545,8 @@ def rfq_details(url, html, now, title=''):
     else:
         status = 'НЕ ПРИНЯТА'
     return {'url': canonical_url(url), 'title': title or scope[:150], 'relevance': relevance,
+            'structured_sections_detected': structured is not None,
+            'structured_date_labels': structured_date_labels,
             'aluminum_or_edm_in_order_description': material or edm,
             'source_card_format': 'Н/Д' if scope_label is not None or not scoped or ambiguous_page else 'recognized',
             'publication_date': (str(next(iter(publication_dates)))
@@ -361,7 +565,7 @@ def rfq_details(url, html, now, title=''):
                 lowered, sorted(str(d) for d in deadline_dates), sorted(set(attachments)),
                 closed, hidden, sensitive_or_unknown, deadline_invalid, ambiguous_page,
                 sorted(str(d) for d in publication_dates),
-            ], ensure_ascii=False).encode('utf-8')).hexdigest(),
+            ] + ([structured] if is_ceh else []), ensure_ascii=False).encode('utf-8')).hexdigest(),
             'observed_utc': dt.datetime.now(dt.timezone.utc).isoformat()}
 
 def load_state(metadata=None):
@@ -597,6 +801,8 @@ def run(now=None):
                 try:
                     result = rfq_details(url, get(url), now, title)
                     successful_details += 1
+                    if key == 'ceh' and result['structured_sections_detected']:
+                        stats['structured_cards_observed'] = stats.get('structured_cards_observed', 0) + 1
                     format_gap = bool(result['technical_reasons'])
                     previous = history.get(identity)
                     result['details_changed'] = bool(previous and previous['details_sha256'] != result['details_sha256'])

@@ -107,6 +107,85 @@ class CardTests(unittest.TestCase):
         self.assertIn('restricted_end_use', self.parse(card() + '<p>Применение двойного назначения</p>')['rejection_reasons'])
 
 
+class StructuredSourceTests(unittest.TestCase):
+    CEH = monitor.SOURCES[2][1] + '/synthetic0001'
+    TOMSK = monitor.SOURCES[3]
+    TENDER = '/tender/00000000-0000-4000-8000-000000000001'
+    ANNOUNCED = '<p>Дата объявления: 24 ноября 2099 г., 09:10</p>'
+    DEADLINE = '<p>Дата и время окончания подачи заявок: 30 ноября 2099 г., 12:45</p>'
+    TABLE = ('<table><caption>Производственные заказы (2099)</caption>'
+             '<tr><th>Номер</th><th>Предмет</th></tr>{}</table>')
+
+    def ceh(self, material, extra=''):
+        html = ('<article><h1>Корпус из алюминия</h1>'
+                '<section><h2>ИЗДЕЛИЕ И ЗАДАЧА</h2><p>Требуется изготовление корпуса</p></section>'
+                f'<section><h2>МАТЕРИАЛ И ОБЪЁМ</h2><p>Материал: {material}</p>'
+                '<p>Объём: 10 шт.</p></section>'
+                '<section><h2>ТРЕБОВАНИЯ И ОСОБЕННОСТИ</h2><p>Синтетический маркер</p></section>'
+                '<section><h2>ОЖИДАНИЯ ОТ ИСПОЛНИТЕЛЯ В ОТКЛИКЕ</h2><p>Указать срок</p></section>'
+                '<p>Приём заявок до: 30.11.2099</p><p>Создан: 24.11.2099</p>'
+                f'{extra}</article>')
+        return monitor.rfq_details(self.CEH, html, dt.date(2099, 11, 25), 'Корпус из алюминия')
+
+    def test_ceh_uses_material_field_and_keeps_card_unverified(self):
+        matching = self.ceh('Д16Т')
+        self.assertTrue(matching['structured_sections_detected'])
+        self.assertTrue(matching['aluminum_or_edm_in_order_description'])
+        self.assertEqual(matching['source_card_format'], 'Н/Д')
+        self.assertEqual(matching['deadline_dates'], [])
+        self.assertIsNone(matching['publication_date'])
+        self.assertEqual(matching['structured_date_labels'], ['created', 'submission_deadline'])
+        self.assertEqual(matching['commercial_decision'], 'not_accepted')
+        self.assertFalse(matching['buyer_and_live_need_confirmed'])
+        self.assertFalse(matching['eligible_preliminary'])
+        conflict = self.ceh('пластик')
+        self.assertFalse(conflict['aluminum_or_edm_in_order_description'])
+        self.assertIn('conflicting_material', conflict['rejection_reasons'])
+        mixed = self.ceh('Д16Т или пластик')
+        self.assertFalse(mixed['aluminum_or_edm_in_order_description'])
+        self.assertIn('conflicting_material', mixed['rejection_reasons'])
+
+    def test_ceh_refuses_duplicate_sections_and_restricted_scope(self):
+        duplicate = self.ceh('Д16Т', '<section><h2>МАТЕРИАЛ И ОБЪЁМ</h2>'
+                             '<p>Материал: пластик</p></section>')
+        self.assertFalse(duplicate['structured_sections_detected'])
+        self.assertFalse(duplicate['aluminum_or_edm_in_order_description'])
+        restricted = self.ceh('Д16Т', '<p>Назначение: не указано</p>'
+                              '<p>Контакты заказчика скрыты</p>')
+        self.assertIn('restricted_end_use', restricted['rejection_reasons'])
+        self.assertIn('contact_hidden', restricted['rejection_reasons'])
+
+    def test_tomsk_rows_have_bounded_redacted_evidence(self):
+        def diagnose(subject, count):
+            rows = ''.join(f'<tr><td>{i}</td><td>{subject}</td></tr>' for i in range(count))
+            return monitor.index_observations('tomsk_subcontract', self.TABLE.format(rows))['tomsk_catalog']
+
+        result = diagnose('SYNTHETIC_PRIVATE  предмет', 25)
+        self.assertEqual(result['status'], 'Н/Д')
+        self.assertTrue(result['sample_truncated'])
+        self.assertEqual(len(result['sample']), 20)
+        row = result['sample'][0]
+        self.assertEqual(row['row_position'], 1)
+        self.assertEqual(len(row['fields_sha256']), 64)
+        self.assertEqual(row, diagnose('synthetic_private предмет', 1)['sample'][0])
+        self.assertNotIn('SYNTHETIC_PRIVATE', json.dumps(result))
+        self.assertIn('Предмет', result['manual_check'])
+
+    def test_energybase_requires_one_unique_link_and_both_dates_in_one_block(self):
+        link = f'<a href="{self.TENDER}">Синтетический предмет</a>'
+        complete = f'<article>{link}{self.ANNOUNCED}{self.DEADLINE}</article>'
+        row = (f'<table><tr><td>{link}</td><td>{self.ANNOUNCED}</td>'
+               f'<td>{self.DEADLINE}</td></tr></table>')
+        split = f'<article>{link}{self.ANNOUNCED}</article><article>{self.DEADLINE}</article>'
+        duplicate = complete + f'<article>{link}</article>'
+        nested = f'<article>{link}{self.ANNOUNCED}<article>{self.DEADLINE}</article></article>'
+        for html, expected in ((complete, 1), (row, 1), (split, None),
+                               (duplicate, None), (nested, None)):
+            with self.subTest(html=html):
+                stats = monitor.index_observations('energybase_parts', html)
+                self.assertEqual(stats['energybase_index_date_pairs'], expected)
+
+
 class AccessTests(unittest.TestCase):
     def test_robots_rules_and_failed_fetch(self):
         with patch.object(monitor.urllib.request, 'build_opener') as build:
@@ -428,6 +507,26 @@ class CycleTests(unittest.TestCase):
         saved = json.loads(self.state.read_text(encoding='utf-8'))['checked_urls'][url]
         self.assertIsNone(saved['publication_date'])
         self.assertEqual(saved['deadline_dates'], [])
+
+    def test_tomsk_catalog_sample_does_not_create_orders_or_publish_content(self):
+        key, base, pattern = StructuredSourceTests.TOMSK
+        self.sources[:] = [(key, base, pattern)]
+        self.pages[base] = (f'<a href="{base}?synthetic=1">Каталог</a>'
+                            + StructuredSourceTests.TABLE.format(
+                                '<tr><td>43210</td><td>SYNTHETIC_PRIVATE</td></tr>'))
+        report = self.cycle(2)
+        stats = report['source_stats'][key]
+        self.fetch.assert_called_once_with(base)
+        self.assertEqual(len(stats['tomsk_catalog']['sample']), 1)
+        self.assertIsNone(stats['new_publications'])
+        self.assertIsNone(stats['first_observed_urls'])
+        self.assertIsNone(report['new_preliminary_signals'])
+        self.assertEqual(report['items'], [])
+        self.assertEqual(report['manual_review_queue'], [])
+        for payload in (self.log_line, self.output.read_text(encoding='utf-8'),
+                        self.state.read_text(encoding='utf-8')):
+            self.assertNotIn('SYNTHETIC_PRIVATE', payload)
+            self.assertNotIn('43210', payload)
 
     def test_dynamic_index_does_not_claim_coverage(self):
         self.sources[:] = [('ceh', BASE, PATTERN)]
