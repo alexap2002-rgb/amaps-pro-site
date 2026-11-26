@@ -1,4 +1,9 @@
 {
   "version": 1,
-  "task": null
+  "task": {
+    "id": "commercial-monitor-audit",
+    "kind": "monitor-fix",
+    "base": "59d9ab54f72350866fea4970416dc24302446dfd",
+    "sha": "253d9c1ee2925d47ba2ffbee4e2468c866a31d6e"
+  }
 }
